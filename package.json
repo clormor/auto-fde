@@ -1,0 +1,15 @@
+{
+  "name": "ai-fde-autoallow",
+  "private": true,
+  "description": "Chrome extension wrapping the AI FDE AutoAllow script. The version lives in ai-fde-autoallow/manifest.json, not here.",
+  "scripts": {
+    "check": "./build.sh --check",
+    "build": "./build.sh",
+    "build:store": "./build.sh --store",
+    "test": "node test/gate-test.mjs",
+    "test:browser": "node test/ext-test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}
