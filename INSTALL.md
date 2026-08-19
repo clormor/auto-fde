@@ -29,4 +29,20 @@ So: fine on a session you're watching, doing work you'd have clicked through any
 
 ## If nothing happens
 
-Check the address bar. The button only works on an AI FDE session page on `palantirfoundry.com`. If it shows a red `!`, you're on the wrong page.
+**Hover the button.** The tooltip is the diagnostic. A press that worked flashes a
+green `on`; a press that failed flashes a red `!` and puts the reason in the
+tooltip for fifteen seconds, in plain words: wrong host, wrong path, or Chrome
+refusing the injection. Read that before anything else.
+
+If the button is permanently grey and the tooltip says it only runs on session
+pages, the page's address does not match what the extension expects. Copy the
+address out of the bar and send it on; the pattern it matches on is the literal
+text `/ai-fde/` in the path, on a `palantirfoundry.com` host, over https.
+
+If nothing at all happens on a press, not even a badge, the extension has stopped
+loading. That usually means the folder moved or was deleted; Chrome reads it off
+disk every time it starts. Go to `chrome://extensions`, check the card is still
+there and enabled, and look for an **Errors** button on it. Those errors do not
+appear in the page's DevTools console. The service worker has its own console,
+reached by the **service worker** link on the same card, and that is where this
+extension's own logging goes.

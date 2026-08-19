@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI FDE AutoAllow",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Clicks Allow prompts in a Foundry AI FDE session, keeps the tab awake, and resumes after network errors.",
   "permissions": ["scripting"],
   "host_permissions": ["https://*.palantirfoundry.com/*"],

@@ -46,8 +46,33 @@ Permissions are `scripting` plus `https://*.palantirfoundry.com/*`. The host per
 
 ## Not verified
 
-- `test/ext-test.mjs`, the browser run. Needs Playwright, which could not be installed on either machine involved. The click, category, block-list and toggle behaviour is therefore unproven, as is Chrome's acceptance of this specific manifest.
+- `test/ext-test.mjs`, the browser run. Needs Playwright, which could not be installed on either machine involved. The click, category, block-list and toggle behaviour is therefore unproven.
 - Whether the icons render legibly in the real toolbar at 16px.
+
+## Fixed in 1.0.2, after a failure on a fresh session
+
+Symptom: on a freshly added extension the button did nothing on an already-open
+AI FDE session, or flashed a red `!` with no visible explanation.
+
+Two causes, both in `background.js`:
+
+- `onInstalled` and `onStartup` disabled the action globally and then waited for
+  `tabs.onUpdated` or `tabs.onActivated` to re-enable it per tab. Neither event
+  fires for a tab that is already sitting open, so the button stayed greyed
+  until the page was reloaded or the tab was switched away from and back.
+  `refreshAllTabs()` now sweeps `chrome.tabs.query({})` on install and startup.
+  No new permission needed: the host permission already exposes those URLs.
+- `flagProblem()` reported its reason only through `console.warn`, which lands in
+  the service worker console. That is a different console from the page's, and
+  nobody outside this repo thinks to open it, so every failure looked identical
+  from outside. The reason now goes into the button's tooltip for fifteen
+  seconds via `describeUrlMismatch()`, and a successful injection flashes a green
+  `on` badge so a press that worked looks different from one that did not.
+
+The URL gate itself was never at fault. Confirmed against a real session URL,
+`https://valliance.palantirfoundry.com/workspace/ai-fde/session/<uuid>`, which is
+now the first case in `gate-test.mjs` and the only one there that is not invented.
+Chrome accepts the manifest; that part of "not verified" above is settled.
 
 ## Fixed during the build
 
