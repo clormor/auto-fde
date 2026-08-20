@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  69 assertions: the in-page script and the packaged
+npm run test:browser  70 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -235,8 +235,27 @@ which fits a list that mounts rows off a `ResizeObserver` or an
 `IntersectionObserver`: those callbacks are delivered with the frame, and there
 is no frame.
 
-**The visibility spoof is what is left, and it answers the page rather than the
-browser.** `document.hidden` and `document.visibilityState` are given own
+**Measured, with the spoof on: a hidden tab cannot be made to work.** The stall
+report from a background tab running the spoof reads
+`visibility=hidden buttons=77 allow=[none] allowByText=0`. Seventy-seven buttons
+in the document, none of them an approval, and the transcript rows not among
+them. Telling the page it is visible did not change that, so what stops the row
+being mounted is Chrome not drawing the tab rather than Foundry deciding to stand
+down. Nothing an extension can reach from inside the page fixes that, and the
+options that would are outside it: keep the tab active in a window that is at
+least partly visible, which works and is what the README recommends, or answer
+the approval through Foundry's own API rather than its DOM, which is a different
+tool from this one. Do not spend another round on the DOM.
+
+`allowByText` in the report is what makes that reading safe. It counts buttons
+whose `textContent` matches, which needs no rendering at all, so a row that is
+present but unmatched cannot be mistaken for a row that is absent. `labelFor()`
+falls back to `textContent` for the same reason, and a test covers a button whose
+label is inside a `display:none` child, where `innerText` is empty and the button
+is real.
+
+**The visibility spoof is what is left of the page's half, and it answers the
+page rather than the browser.** `document.hidden` and `document.visibilityState` are given own
 properties on `document` that report visible, and the going-hidden
 `visibilitychange` is stopped at the window in the capture phase, upstream of
 anything the page has on `document`. Applications defer work by reading those two

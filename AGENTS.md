@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             69 assertions
+npm run test:browser                             70 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -71,6 +71,12 @@ and no `dist/`.
   sitting on an approval mutates nothing, so the observer never fires and the
   backstop timer is throttled to once a minute. The `visibilitychange` listener
   scans immediately and resets the jump budget. Do not remove it.
+- **A hidden tab cannot be made to work, and this is settled.** Measured with
+  the spoof on, from a background tab: `visibility=hidden buttons=77
+  allow=[none] allowByText=0`. Foundry does not mount the row while Chrome is
+  not drawing the tab, and no button in the document means nothing to press. The
+  answer is a visible window, which the README says, or Foundry's own API, which
+  is a different tool. Do not spend another round on the DOM.
 - **The visibility spoof answers the page, not the browser.** `document.hidden`
   and `document.visibilityState` report visible and the going-hidden event is
   stopped at the window in the capture phase, so the page does not stand down of

@@ -45,6 +45,16 @@
   ];
   const BY_RISK = [...CATEGORIES].sort((a, b) => b.risk - a.risk);
 
+  // innerText is what a person reads off the button, which is what TARGET_LABELS
+  // is written against, so it comes first. It is empty for a subtree the page is
+  // not rendering, and textContent needs no rendering at all, so it is the
+  // fallback: a button in the document whose text is exactly one of the labels is
+  // one to press whether or not the page is drawing it. This is not the fix for a
+  // prompt in a hidden tab, where there is no button in the document to read.
+  function labelFor(btn) {
+    return (btn.innerText || btn.getAttribute('aria-label') || btn.textContent || '').trim();
+  }
+
   function promptContextFor(btn) {
     const container = btn.closest('[role="dialog"], [role="alertdialog"], .dialog, .modal') || btn.parentElement;
     return (container?.innerText || '').slice(0, 400).toLowerCase();
@@ -690,12 +700,17 @@
   // arrives in the console collapsed and gets reported as "Object". The
   // visibility comes from the real reader, so the spoof cannot lie in a
   // diagnostic.
+  // allowByText is counted separately and from textContent, which needs no
+  // rendering of any kind. A button reported by it and not by the labels beside
+  // it is a button that is in the document and is not being matched, which is a
+  // bug here. Neither of them finding anything is the page not having put the
+  // row in the document, which is not.
   function stallReport() {
-    const labels = Array.from(document.querySelectorAll('button'))
-      .map(b => (b.innerText || b.getAttribute('aria-label') || '').trim())
-      .filter(t => /allow/i.test(t));
-    return `visibility=${realVisibility()} buttons=${document.querySelectorAll('button').length}`
-      + ` allow=[${labels.join(' | ') || 'none'}]`;
+    const buttons = Array.from(document.querySelectorAll('button'));
+    const labels = buttons.map(labelFor).filter(t => /allow/i.test(t));
+    const byText = buttons.filter(b => /allow/i.test(b.textContent || '')).length;
+    return `visibility=${realVisibility()} buttons=${buttons.length}`
+      + ` allow=[${labels.join(' | ') || 'none'}] allowByText=${byText}`;
   }
 
   function reachPendingPrompt() {
@@ -743,7 +758,7 @@
       // deliberately refused prompt is up would fight the user for the scrollbar.
       let sawPrompt = false;
       document.querySelectorAll('button').forEach(btn => {
-        const label = (btn.innerText || btn.getAttribute('aria-label') || '').trim();
+        const label = labelFor(btn);
         if (!label || !TARGET_LABELS.includes(label.toLowerCase())) return;
         sawPrompt = true;
         if (clicked.has(btn) || btn.disabled) return;

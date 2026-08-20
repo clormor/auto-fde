@@ -469,6 +469,31 @@ check('a button label cannot inject markup into the log',
   await p1.evaluate(() => !window.__pwned)
     && !(await has(p1, '#af-log img')));
 
+// The label is read off innerText, which is what a person sees. innerText skips
+// a subtree the page is not rendering, so a button can be in the document with
+// the right text and report none of it. textContent is the fallback, which needs
+// no rendering at all. This is not a fix for a hidden tab, where there is no
+// button in the document to read; it is what stops "not there" and "there and
+// not matched" looking identical from the outside.
+const unrendered = await p1.evaluate(() => {
+  const row = document.createElement('div');
+  row.setAttribute('role', 'dialog');
+  row.innerHTML = '<p>Agent wants to read the unrendered record.</p>';
+  const b = document.createElement('button');
+  b.id = 'unrendered';
+  b.innerHTML = '<span style="display:none">Allow</span>';
+  row.appendChild(b);
+  document.body.appendChild(row);
+  // The premise. Without this the assertion below could pass on innerText alone
+  // and prove nothing.
+  return { innerText: b.innerText, textContent: b.textContent };
+});
+await p1.waitForTimeout(800);
+check('a button whose label the page is not rendering is still matched',
+  unrendered.innerText === '' && unrendered.textContent === 'Allow'
+    && (await p1.evaluate(() => window.__hits)).includes('unrendered'),
+  JSON.stringify(unrendered));
+
 // ---------------------------------------------------------------------------
 // Auto-resume. The banner is what starts a recovery, and Foundry's callout does
 // not always clear itself once the connection is back, so the banner still being
