@@ -343,6 +343,11 @@
   const BODY_LIMIT = 240;
   const FIELD_LIMIT = 12;
   const FIELD_VALUE_LIMIT = 200;
+  // The session's own approval policy, which is the one field worth reading
+  // whole. It is what decides whether a prompt appears at all, so a truncated
+  // copy of it is the one truncation that costs something.
+  const POLICY_FIELD = /approvalsettings|bulkapproval/i;
+  const POLICY_VALUE_LIMIT = 2500;
   const WALK_DEPTH = 8;
   // How long after an Allow is pressed to treat everything as interesting. The
   // request that grants the approval is the one that follows the click, and
@@ -379,7 +384,8 @@
         Object.keys(value).forEach(key => {
           const here = path ? `${path}.${key}` : key;
           if (APPROVAL_TRAFFIC.test(key)) {
-            add(`${here} = ${shorten(JSON.stringify(value[key]), FIELD_VALUE_LIMIT)}`);
+            const limit = POLICY_FIELD.test(key) ? POLICY_VALUE_LIMIT : FIELD_VALUE_LIMIT;
+            add(`${here} = ${shorten(JSON.stringify(value[key]), limit)}`);
           }
           walk(value[key], here, depth + 1);
         });

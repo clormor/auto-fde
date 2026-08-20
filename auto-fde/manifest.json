@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Auto FDE",
-  "version": "3.7.2",
+  "version": "3.7.3",
   "description": "Clicks Allow prompts in a Foundry AI FDE session, keeps the tab awake, and resumes after network errors.",
   "permissions": ["scripting", "storage"],
   "optional_host_permissions": ["https://*/*"],

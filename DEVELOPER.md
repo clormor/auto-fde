@@ -309,9 +309,33 @@ in full.
 The shape that makes it a document update with optimistic concurrency is the
 thing to weigh before building on it. Sending one means holding a version the
 server still accepts and an item list that is correct, and getting either wrong
-writes junk into a live session. A read-modify-write against the thread is the
-tractable version of that; maintaining a shadow copy from observed traffic is
-not.
+writes junk into a live session.
+
+**There is no approval to send.** The third capture settles it. What follows a
+click is the client persisting the thread it already owns: `itemsToWrite` full of
+assistant messages, tool usages, and OpenAI reasoning items carrying
+`encryptedContent`. A client holding encrypted reasoning state and writing the
+whole document is a client running the agent loop itself, and an approval in that
+architecture is a state transition inside the page, not a request to a server. So
+posting an `/update` from outside would write to the transcript without approving
+anything, because nothing on the far end is waiting to be told.
+
+The same capture shows the lever that does exist:
+
+```
+agentStateModification.sessionState.toolApprovalSettingsOverrides =
+  {"load_skill":{"type":"default","rules":[],"default":{"type":"askUser"}}, ...}
+agentStateModification.sessionState.bulkApprovalSettings =
+  {"create":null,"edit":null,"import":null,"deploy":null,"tag":null,
+   "agentSelf":{"type":"default","rules":[],"default":{"type":"autoApprove"}}}
+```
+
+`askUser` against `autoApprove`, per tool, plus bulk categories that are the ones
+this extension approximates with regexes on prompt text. Setting those removes
+the prompt instead of answering it, which needs no button, no rendered row and no
+visible tab. It is issue #5, and it is a better tool than this one for the job
+this one was built for. `POLICY_FIELD` in the traffic watch prints that object at
+a longer limit than everything else for exactly that reason.
 
 It is reached from the console rather than the panel because it is not a decision
 anyone makes while using this. Detection is already solved for the API route, as
