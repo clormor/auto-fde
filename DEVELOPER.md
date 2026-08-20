@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  73 assertions: the in-page script and the packaged
+npm run test:browser  76 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -273,12 +273,37 @@ point building a clipboard-paste mode to answer it.
 
 **`window.__autoFde.watchTraffic()`** is the first step of the other route, and
 the only one that needs a real session. It wraps `fetch`, `XMLHttpRequest` and
-`WebSocket.prototype.send`, and logs the method, URL and a truncated body of any
-outgoing request whose URL or body matches `/approv/i`. `watchTraffic({ all:
-true })` logs every outgoing request instead, for when the approval call is not
-named after what it does. It logs no headers, deliberately: that is where the
+`WebSocket.prototype.send`. It logs no headers, deliberately: that is where the
 session token is, and these lines get copied into chat windows. Stop unwraps all
 four, and a test asserts both the log line and the absence of the header.
+
+Three things it learned the hard way, all from one capture against a real
+session:
+
+- **Printing the body is useless.** A Foundry thread body is hundreds of item
+  ids and a tool configuration block, and the field that matters is past any
+  reasonable truncation. So the body is parsed and walked, and only the paths
+  whose key or string value carries the word are reported. A wall of thread
+  document becomes two or three lines.
+- **The word is not enough on its own.** `QuickApprovalProjectQuery`, a
+  repository pull request query with nothing to do with a session, was the
+  loudest thing in the log. Outside the window below, a request has to be on
+  `/ai-fde/api/` as well as carry the word. `watchTraffic({ all: true })` drops
+  both bars for when the grant is named after nothing at all.
+- **The window has to open before the click, not after.** The page sends the
+  grant synchronously from its own click handler, so a window opened in
+  `record()`, which runs after `btn.click()`, has already missed the request it
+  exists to catch. `markApprovalClick()` is called immediately before the click
+  instead, and the marker line in the log is what tells the grant apart from
+  everything else the session was doing at the time.
+
+What the first capture showed: `POST /ai-fde/api/threads/{id}/metadata` carrying
+`agentStateModification.toolConfigurations`, and `POST
+/ai-fde/api/threads/{id}/update` carrying `currentVersion` and
+`itemIdsInOrder`. That second shape is a document update with optimistic
+concurrency, so sending an approval that way means holding a correct version and
+a correct item list. Getting it wrong writes to somebody's session. Know exactly
+which field flips before going near it.
 
 It is reached from the console rather than the panel because it is not a decision
 anyone makes while using this. Detection is already solved for the API route, as

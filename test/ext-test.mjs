@@ -526,6 +526,80 @@ check('a banner still on screen does not send a second resume message',
   sendsLater === sendsAfter, `sends=${sendsLater - sendsAfter}`);
 
 // ---------------------------------------------------------------------------
+// The traffic watch. It is reached from the console rather than the panel,
+// because it is a step in working out whether an approval can be sent instead of
+// clicked, not a decision anyone makes while using this. It must log the request
+// going out and it must never log a header, which is where the session token is.
+// ---------------------------------------------------------------------------
+const seen = [];
+const collect = msg => seen.push(msg.text());
+p1.on('console', collect);
+await p1.evaluate(async () => {
+  window.__autoFde.watchTraffic();
+  // A body shaped like the real thing: the field that matters is a long way past
+  // any sane truncation, under an id, among several hundred siblings.
+  const items = {};
+  for (let i = 0; i < 200; i++) items[`item-${i}`] = { kind: 'message', text: 'x'.repeat(40) };
+  items['item-200'] = { kind: 'toolCall', approvalState: 'APPROVED' };
+  await fetch('/ai-fde/api/threads/t1/update', {
+    method: 'POST',
+    headers: { authorization: 'Bearer do-not-log-me' },
+    body: JSON.stringify({ currentVersion: 'v1', items }),
+  });
+  // Same shape, same fields, sent again. One line, not two.
+  await fetch('/ai-fde/api/threads/t1/update', {
+    method: 'POST',
+    body: JSON.stringify({ currentVersion: 'v2', items }),
+  });
+  // On the session's API but says nothing about approval, and a query named
+  // after approval that has nothing to do with this session.
+  await fetch('/ai-fde/api/threads/t1/noise', { method: 'POST', body: '{"noise":true}' });
+  await fetch('/graphql-gateway/api/bulk?q=QuickApprovalProjectQuery', {
+    method: 'POST', body: '{"unrelated":true}' });
+});
+await p1.waitForTimeout(300);
+p1.off('console', collect);
+
+const traffic = seen.filter(t => t.startsWith('[Auto FDE] traffic: '));
+check('the traffic watch reports the field an approval sets, not the body around it',
+  traffic.length === 1
+    && traffic[0].includes('items.item-200.approvalState = "APPROVED"'),
+  JSON.stringify(traffic));
+check('a request that says nothing new is not logged twice',
+  traffic.filter(t => t.includes('/update')).length === 1);
+check('a query named after approval elsewhere in Foundry is not logged',
+  !traffic.some(t => t.includes('QuickApprovalProjectQuery')));
+check('the traffic watch logs no headers, so no session token',
+  !seen.some(t => t.includes('do-not-log-me')));
+
+// Which request grants the approval is worth more than its name, and the one
+// that follows the click is the one.
+const afterClick = [];
+const collectClick = msg => afterClick.push(msg.text());
+p1.on('console', collectClick);
+await p1.evaluate(() => {
+  const row = document.createElement('div');
+  row.setAttribute('role', 'dialog');
+  row.innerHTML = '<p>Agent wants to read the traffic record.</p>';
+  const b = document.createElement('button');
+  b.id = 'traffic-allow';
+  b.textContent = 'Allow';
+  b.addEventListener('click', () => {
+    // No approval word anywhere: found only because it followed the click.
+    fetch('/ai-fde/api/threads/t1/items/9/decision', { method: 'POST', body: '{"decision":"ALLOW"}' });
+  });
+  row.appendChild(b);
+  document.body.appendChild(row);
+});
+await p1.waitForTimeout(600);
+p1.off('console', collectClick);
+check('the log marks the click, so the request that grants it can be told apart',
+  afterClick.some(t => t.includes('Allow clicked, what follows is the grant'))
+    && afterClick.some(t => t.includes('/items/9/decision')),
+  JSON.stringify(afterClick.filter(t => t.startsWith('[Auto FDE] traffic'))));
+
+
+// ---------------------------------------------------------------------------
 // The header is the drag handle and the transport controls sit inside it, so a
 // press on one of those must not drag the panel out from under the pointer.
 // ---------------------------------------------------------------------------
@@ -564,35 +638,6 @@ check('pausing switches the glyph to play and relabels the button',
 check('the paused glyph is a different colour from the running one',
   afterPause.colour !== beforePause.colour,
   `${beforePause.colour} -> ${afterPause.colour}`);
-
-// ---------------------------------------------------------------------------
-// The traffic watch. It is reached from the console rather than the panel,
-// because it is a step in working out whether an approval can be sent instead of
-// clicked, not a decision anyone makes while using this. It must log the request
-// going out and it must never log a header, which is where the session token is.
-// ---------------------------------------------------------------------------
-const seen = [];
-const collect = msg => seen.push(msg.text());
-p1.on('console', collect);
-await p1.evaluate(async () => {
-  window.__autoFde.watchTraffic();
-  await fetch('/api/session/approve', {
-    method: 'POST',
-    headers: { authorization: 'Bearer do-not-log-me' },
-    body: '{"toolCallId":"abc123","approved":true}',
-  });
-  await fetch('/api/session/unrelated', { method: 'POST', body: '{"noise":true}' });
-});
-await p1.waitForTimeout(300);
-p1.off('console', collect);
-
-const traffic = seen.filter(t => t.startsWith('[Auto FDE] traffic: '));
-check('the traffic watch logs the request an approval goes out on',
-  traffic.length === 1 && traffic[0].includes('/api/session/approve')
-    && traffic[0].includes('"toolCallId":"abc123"'),
-  JSON.stringify(traffic));
-check('the traffic watch logs no headers, so no session token',
-  !seen.some(t => t.includes('do-not-log-me')));
 
 await p1.evaluate(SCRIPT);
 check('re-injecting does not stack a second panel',

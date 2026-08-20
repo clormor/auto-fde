@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             73 assertions
+npm run test:browser                             76 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -85,8 +85,14 @@ and no `dist/`.
 - **`watchTraffic()` logs no headers.** It is the capture step for sending an
   approval rather than clicking one, reached from the console as
   `window.__autoFde.watchTraffic()`, and its output gets pasted into chat
-  windows. Bodies truncated, headers never. Stop unwraps `fetch`,
-  `XMLHttpRequest` and `WebSocket.prototype.send`.
+  windows. Headers never. Stop unwraps `fetch`, `XMLHttpRequest` and
+  `WebSocket.prototype.send`.
+- **It reports fields, not bodies, and the click window opens before the
+  click.** A thread body buries the field that matters past any truncation, so
+  the body is walked and only matching paths are printed. The page sends the
+  grant synchronously from its own click handler, so `markApprovalClick()` runs
+  immediately before `btn.click()`; moving it into `record()` puts it after the
+  click and misses the request.
 - **The visibility spoof answers the page, not the browser.** `document.hidden`
   and `document.visibilityState` report visible and the going-hidden event is
   stopped at the window in the capture phase, so the page does not stand down of

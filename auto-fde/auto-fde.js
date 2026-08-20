@@ -331,26 +331,112 @@
   //
   // Never a header. That is where the session token is, and this writes to a
   // console whose contents get copied into chat windows.
+  //
+  // A first pass at this printed the first 800 characters of every body matching
+  // the word, which on a Foundry thread is 800 characters of tool configuration
+  // and item ids with the interesting field somewhere past the cut. So the body
+  // is not printed whole: it is parsed, walked, and only the paths whose key or
+  // value carries the word are reported. That turns a wall of thread document
+  // into the two or three fields an approval actually sets.
   const APPROVAL_TRAFFIC = /approv/i;
-  const BODY_LIMIT = 800;
-  let watching = false;
+  const SESSION_API = '/ai-fde/api/';
+  const BODY_LIMIT = 240;
+  const FIELD_LIMIT = 12;
+  const FIELD_VALUE_LIMIT = 200;
+  const WALK_DEPTH = 8;
+  // How long after an Allow is pressed to treat everything as interesting. The
+  // request that grants the approval is the one that follows the click, and
+  // knowing which one that is beats guessing from its name.
+  const CLICK_WINDOW_MS = 2000;
+  let watching = false, capturingUntil = 0;
+
+  function shorten(text, limit) {
+    return text.length > limit ? text.slice(0, limit) + '…' : text;
+  }
+
+  // Every path whose key or string value carries the word, which is what an
+  // approval sets and what a body this size buries.
+  function approvalFields(text) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return [];
+    }
+    const found = [];
+    // A field named for approval whose value is also the word reports itself
+    // twice, once for each, and two identical lines read as two findings.
+    const add = entry => {
+      if (!found.includes(entry)) found.push(entry);
+    };
+    const walk = (value, path, depth) => {
+      if (found.length >= FIELD_LIMIT || depth > WALK_DEPTH) return;
+      if (Array.isArray(value)) {
+        value.forEach((item, i) => walk(item, `${path}[${i}]`, depth + 1));
+        return;
+      }
+      if (value && typeof value === 'object') {
+        Object.keys(value).forEach(key => {
+          const here = path ? `${path}.${key}` : key;
+          if (APPROVAL_TRAFFIC.test(key)) {
+            add(`${here} = ${shorten(JSON.stringify(value[key]), FIELD_VALUE_LIMIT)}`);
+          }
+          walk(value[key], here, depth + 1);
+        });
+        return;
+      }
+      if (typeof value === 'string' && APPROVAL_TRAFFIC.test(value)) {
+        add(`${path} = ${JSON.stringify(shorten(value, FIELD_VALUE_LIMIT))}`);
+      }
+    };
+    walk(parsed, '', 0);
+    return found;
+  }
+
+  // Called when a prompt is clicked, so the log says which requests followed it.
+  function markApprovalClick() {
+    if (!watching) return;
+    capturingUntil = Date.now() + CLICK_WINDOW_MS;
+    console.log('[Auto FDE] traffic: --- Allow clicked, what follows is the grant ---');
+  }
 
   function watchTraffic(options) {
     const everything = !!(options && options.all);
     if (watching) {
       console.log('[Auto FDE] traffic watch is already on');
-      return;
+      return 'already on';
     }
     watching = true;
 
+    // The same thread metadata goes out over and over with a new version each
+    // time. Repeats of a request that says nothing new are dropped, or the one
+    // line that matters scrolls away.
+    const seen = new Set();
+
     const report = (how, url, body) => {
       const text = typeof body === 'string' ? body : (body == null ? '' : String(body));
-      const matched = APPROVAL_TRAFFIC.test(url) || APPROVAL_TRAFFIC.test(text);
-      if (!matched && !everything) return;
+      const following = Date.now() < capturingUntil;
+      const named = APPROVAL_TRAFFIC.test(url) || APPROVAL_TRAFFIC.test(text);
+      // Outside the window after a click, the bar is the session's own API and
+      // the word. Without the first half, a repository pull request query called
+      // QuickApprovalProjectQuery is the loudest thing in the log.
+      if (!everything && !following && !(url.includes(SESSION_API) && named)) return;
+
+      const fields = approvalFields(text);
+      const signature = `${how} ${url} ${fields.join(';')}`;
+      if (!following) {
+        if (seen.has(signature)) return;
+        if (seen.size > 50) seen.clear();
+        seen.add(signature);
+      }
+
       // The colon is load-bearing: it is what the line the user is asked to copy
       // has and the banner below does not.
-      console.log(`[Auto FDE] traffic: ${how} ${url}`
-        + (text ? `\n${text.slice(0, BODY_LIMIT)}` : ''));
+      console.log([
+        `[Auto FDE] traffic: ${how} ${url}`,
+        fields.length ? `  fields: ${fields.join('\n          ')}` : '  fields: none',
+        text ? `  body: ${shorten(text, BODY_LIMIT)}` : '',
+      ].filter(Boolean).join('\n'));
     };
 
     const realFetch = window.fetch;
@@ -390,7 +476,8 @@
     });
 
     console.log(`[Auto FDE] traffic watch is on${everything ? ', logging everything' : ''}.`
-      + ' Approve one prompt, then copy every line starting "[Auto FDE] traffic:".');
+      + ' Let it approve one prompt, then copy every line starting "[Auto FDE] traffic:".');
+    return 'on';
   }
 
   // ---------- UI panel ----------
@@ -852,6 +939,10 @@
         // whether or not anyone is watching.
         clicked.add(btn);
         btn.style.outline = '2px solid #4ade80';
+        // Before the click, not after. The page's own handler sends the grant
+        // synchronously, so a window opened after the click has already missed
+        // the request it was opened to catch.
+        markApprovalClick();
         btn.click();
         record(label, cat.id);
         resetJumps();
