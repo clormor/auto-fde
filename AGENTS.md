@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             89 assertions
+npm run test:browser                             90 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.

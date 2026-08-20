@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  89 assertions: the in-page script and the packaged
+npm run test:browser  90 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -451,10 +451,32 @@ before the search succeeds, which is what turned one bad search into a run with
 no watch and no second attempt. A test puts the store sixty levels above the
 button.
 
+**The vocabulary, from a real session.** A click sends three events into the
+store, in this order:
+
+```
+type="removeToolApprovalOverride" {toolName, type}      (synchronous, in the click)
+type="upsertChildContextItem"     {contextItem, type}   (the answer)
+type="changeRequestStatus"        {requestStatus, agentLocator, type}
+```
+
+`agent.onEvent` takes `(state, event)`, so it is the reducer rather than the
+dispatcher, and `agent.events` is 35 definitions of `{make, schema}`: the
+vocabulary itself, not a log. `probeStore()` prints `make.name` for all of them
+in one line.
+
+So the answer travels as the `toolResponse` on an upserted context item.
+`describeArg()` prints that one field and nothing else about the item, because
+everything else on it is the conversation.
+
 **Reading the grant out of the store is the shortest route and needs no
 vocabulary.** `noteGrantBefore()` records the pending item's `toolResponse`
 immediately before a click and `readGrantAfter()` reads the same item on the next
-scan. The difference is the target state, stated by the application rather than
+scan. The item is the one the button belongs to, found by walking its fibers for
+a `toolUseId` or `contextItemId`. Taking the first pending item in the map
+instead is what made this silent for a whole run: with several prompts queued it
+watched one the click was never going to answer, and the guard against noting
+twice meant it never tried again. The difference is the target state, stated by the application rather than
 guessed at: `pending_approval` was known from the traffic capture, what replaces
 it was not. That plus a mounted `handleUpdateContextItem` is enough to answer a
 prompt without a row, and neither needs the event vocabulary at all.

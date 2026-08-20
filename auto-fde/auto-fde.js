@@ -665,7 +665,10 @@
   // worth being slow about.
   const PENDING_STATE = /pending/i;
   const ITEM_SEARCH_DEPTH = 4;
-  const EVENT_SAMPLE = 6;
+  const EVENT_NAMES_LIMIT = 1200;
+  // Up here rather than beside the grant reader, because describeArg() prints a
+  // toolResponse too and is declared above it.
+  const GRANT_LIMIT = 400;
 
   function looksLikeStore(value) {
     return !!value && typeof value === 'object'
@@ -758,10 +761,14 @@
       // has seen rather than the ones it accepts, one of them is an approval
       // already granted in this session, and the vocabulary needs no click to
       // learn. The tail, because the recent ones are the relevant ones.
+      // Each entry came back as {make, schema}, so these are definitions rather
+      // than a log: the vocabulary itself. The factory's name is the event's
+      // name, which is the whole list in one line.
       if (Array.isArray(agent.events)) {
-        agent.events.slice(-EVENT_SAMPLE).forEach((event, i) => {
-          lines.push(`  agent.events[-${EVENT_SAMPLE - i}]: ${describeArg(event)}`);
-        });
+        const names = agent.events
+          .map(event => (event && typeof event.make === 'function' && event.make.name) || '?')
+          .join(', ');
+        lines.push(`  agent.events names: ${shorten(names, EVENT_NAMES_LIMIT)}`);
       }
     }
 
@@ -811,7 +818,13 @@
     if (!value || typeof value !== 'object') return describeValue(value);
     const type = value.type;
     const head = typeof type === 'string' ? `type=${JSON.stringify(type)} ` : '';
-    return `${head}${describeValue(value)}`;
+    // upsertChildContextItem is the event that answers a prompt, and the answer
+    // is the toolResponse it carries. Everything else about the item is the
+    // conversation, so only that one field is printed.
+    const item = value.contextItem;
+    const holder = item ? findToolResponse(item, 0) : null;
+    const tail = holder ? ` toolResponse=${shorten(JSON.stringify(holder.toolResponse), GRANT_LIMIT)}` : '';
+    return `${head}${describeValue(value)}${tail}`;
   }
 
   function installStoreWatch(el) {
@@ -852,7 +865,6 @@
   // before a click, then read the same item again once the page has answered.
   // The difference is the target state, stated by the application rather than
   // guessed at. `pending_approval` is known; what replaces it is not.
-  const GRANT_LIMIT = 400;
   let awaitingGrant = null, grantRead = false;
 
   function safeSnapshot(store) {
@@ -876,12 +888,41 @@
     return null;
   }
 
+  // The id of the item this button belongs to, read off its own fibers. Taking
+  // the first pending item in the map instead is what made this silent: with
+  // several prompts queued it watched one the click was never going to answer,
+  // and the guard against noting twice meant it never tried again.
+  const ITEM_ID_PROPS = ['toolUseId', 'contextItemId', 'maybePendingUserActionContextItemId', 'itemId'];
+
+  function itemIdFor(el) {
+    let fiber = fiberFor(el);
+    for (let level = 0; fiber && level < STORE_LEVELS; level++, fiber = fiber.return) {
+      const props = fiber.memoizedProps;
+      if (!props || typeof props !== 'object') continue;
+      for (const key of ITEM_ID_PROPS) {
+        if (typeof props[key] === 'string' && props[key]) return props[key];
+      }
+    }
+    return null;
+  }
+
   function noteGrantBefore(el) {
     if (grantRead || awaitingGrant) return;
     const found = getStore(el);
     if (!found) return;
     const snapshot = safeSnapshot(found.store);
-    const pending = snapshot && findPendingItem(snapshot.contextMap, 'contextMap', 0);
+    const map = snapshot && snapshot.contextMap;
+    if (!map) return;
+
+    const id = itemIdFor(el);
+    const holder = id ? findToolResponse(map[id], 0) : null;
+    if (holder) {
+      awaitingGrant = { id, before: shorten(JSON.stringify(holder.toolResponse), GRANT_LIMIT) };
+      return;
+    }
+    // No id on the fibers, so fall back to whatever is pending. Better than
+    // nothing, and the log says which id it settled on either way.
+    const pending = findPendingItem(map, 'contextMap', 0);
     if (!pending || !pending.item.id) return;
     awaitingGrant = {
       id: pending.item.id,

@@ -113,16 +113,28 @@ const WINDOWED_PAGE = `<!doctype html><html><body style="margin:0">
     for (let i = 0; i < 60; i++) {
       chain = { type: { name: 'Filler' + i }, memoizedProps: {}, return: chain };
     }
+    // Two items pending, and the one this button answers is not the first in the
+    // map. Taking the first is what made the grant read silent.
+    state.contextMap['item-0'] = { id: 'item-0', toolResponse: { state: 'pending_approval' } };
     b['__reactFiber$mock'] = {
       type: { name: 'ToolApprovalRow' },
-      memoizedProps: { onApprove: () => {}, itemId: 'item-1' },
+      memoizedProps: { onApprove: () => {}, toolUseId: 'item-1' },
       return: chain,
     };
     // What the page does when the button is pressed. The watch has to read this
     // without changing it, which is why the payload is checked as well.
     b.addEventListener('click', () => {
-      store.dispatch({ type: 'toolApprovalGranted', itemId: 'item-1' });
       state.contextMap['item-1'].toolResponse = { state: 'executing' };
+      // Shaped the way the real one is: the answer travels as the toolResponse on
+      // an upserted context item, with the rest of the item being conversation.
+      store.dispatch({
+        type: 'upsertChildContextItem',
+        contextItem: {
+          id: 'item-1',
+          toolResponse: { state: 'executing' },
+          text: 'every word of the conversation',
+        },
+      });
     });
     row.appendChild(b);
     box.appendChild(row);
@@ -882,8 +894,13 @@ check('the store is found however far above the prompt it sits',
     && !storeWatch.some(t => t.includes('none reachable')),
   JSON.stringify(storeWatch));
 check('the store watch reads what the click sends into the store',
-  storeWatch.some(t => t.includes('store dispatch: type="toolApprovalGranted"')
-    && t.includes('{type, itemId}')),
+  storeWatch.some(t => t.includes('store dispatch: type="upsertChildContextItem"')),
+  JSON.stringify(storeWatch));
+// The answer is the toolResponse the event carries, and nothing else about the
+// item is anyone's business.
+check('the event is reported by its toolResponse, not by its contents',
+  storeWatch.some(t => t.includes('toolResponse={"state":"executing"}'))
+    && !storeWatch.some(t => t.includes('every word of the conversation')),
   JSON.stringify(storeWatch));
 // The shortest route to what an approval sets, needing no vocabulary at all.
 check('the grant is read out of the store, before against after',
@@ -893,7 +910,7 @@ check('the grant is read out of the store, before against after',
   JSON.stringify(storeWatch));
 check('the store watch passes the event through untouched',
   (await p6.evaluate(() => window.__dispatched)).length === 1
-    && (await p6.evaluate(() => window.__dispatched[0].itemId)) === 'item-1');
+    && (await p6.evaluate(() => window.__dispatched[0].contextItem.id)) === 'item-1');
 
 check('a prompt the list had not rendered is reached and approved',
   (await p6.evaluate(() => window.__hits)).includes('offscreen'),
