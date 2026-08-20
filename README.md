@@ -48,7 +48,7 @@ collapsed state are remembered. Pause and stop are icons in the title bar, so
 they still work when the panel is collapsed down to a single bar with the
 chevron. Paused shows an amber play icon, running shows a green pause icon.
 
-Two settings sit below the categories:
+Three settings sit below the categories:
 
 - **Keep the tab awake**, on by default, since a tab left in the background is
   the usual reason to run this. Inaudible audio stops Chrome throttling the tab.
@@ -59,6 +59,10 @@ Two settings sit below the categories:
   connection has been back for a couple of seconds it types one line into the
   chat telling the agent to carry on, and sends it. Every send is in the panel's
   log. Untick it if you would rather nothing was said on your behalf.
+- **Tell the page the tab is visible**, on by default. Foundry is told the tab is
+  in front even when it is not, so it does not stand its own work down while you
+  are elsewhere. Untick it if anything about the session behaves oddly in the
+  background.
 
 If a prompt arrives while you are scrolled up the transcript, the panel scrolls
 you to the bottom to reach it. Foundry only keeps the part of a long session you
@@ -67,11 +71,15 @@ not there. If it cannot get to one it keeps trying, more slowly, and says so in
 the log.
 
 One thing is worth knowing about long sessions in a background tab. Chrome stops
-drawing a tab you are not looking at, and Foundry will not add a message to a
-page it is not drawing, so a prompt can arrive with nothing on the page to press.
-The panel acts the instant you come back to the tab, and clicking once in the tab
-after you open the panel is worth doing anyway, since that is what lets the
-keep-alive start. If it has not started, the log says so.
+drawing a tab you are not looking at, and a prompt can arrive with nothing on the
+page to press, because Foundry has not added the message to a page nobody is
+looking at. The third setting above is there to push back on that, and the panel
+acts the instant you come back to the tab either way. If you want the best odds,
+give the session its own window and leave any sliver of it uncovered: Chrome
+keeps drawing a window you can see, even when you are working in something else,
+which it does not do for a background tab. Clicking once in the tab after you
+open the panel is worth doing regardless, since that is what lets the keep-alive
+start, and the log says so if it has not.
 
 **Stop** shuts it down, and so does reloading the page. Press the toolbar button
 again to start it back up.

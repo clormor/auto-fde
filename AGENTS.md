@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             64 assertions
+npm run test:browser                             69 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -71,6 +71,13 @@ and no `dist/`.
   sitting on an approval mutates nothing, so the observer never fires and the
   backstop timer is throttled to once a minute. The `visibilitychange` listener
   scans immediately and resets the jump budget. Do not remove it.
+- **The visibility spoof answers the page, not the browser.** `document.hidden`
+  and `document.visibilityState` report visible and the going-hidden event is
+  stopped at the window in the capture phase, so the page does not stand down of
+  its own accord. It cannot make Chrome draw the tab, so do not describe it as
+  fixing background operation. Let the coming-back event through, keep
+  `realVisibility()` reading the truth off the prototype for the script's own
+  decisions and diagnostics, and undo the properties on Stop.
 - **The panel lives in a shadow root** (`#af-host`), in the system font, grouped
   into captioned sections by what each control decides. Do not move controls
   between those groups: keeping the tab awake is not a decision about which
