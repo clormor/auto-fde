@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  55 assertions: the in-page script and the packaged
+npm run test:browser  62 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -173,6 +173,32 @@ delay: there is no unthrottled way to wait, since `requestAnimationFrame` is
 paused in hidden tabs too. The 2000ms `setInterval` catches a prompt that
 arrives without a mutation the observer sees; being a timer is exactly why it is
 the backstop and not the mechanism.
+
+**A prompt that is not in the document cannot be waited for.** The transcript is
+a windowed list: rows outside the range it has rendered are not in the page at
+all. An approval that arrives while the user is scrolled up therefore has no
+button for the scan to find and produces no mutation for the observer to react
+to, and an unthrottled observer is no help against a button that does not exist.
+The symptom was a panel whose count sat still for minutes and then moved the
+instant somebody scrolled the tab, which reads as throttling and is not.
+
+`reachPendingPrompt()` runs when a scan finds no prompt anywhere on the page. It
+looks for the pill Foundry floats over the transcript to say an approval is
+pending, matched on its text because the sentence belongs to the product and the
+class does not, presses it, and assigns `scrollTop` on the transcript. Both
+halves earn their place: the pill is the page's own route back to the row, and
+the assignment is the half that still works in a tab Chrome has stopped
+painting, since a smooth scroll is driven by frames and frames stop. A test
+asserts the scroll arrives in a single event rather than a run of them.
+
+Two limits keep that from becoming its own problem. A prompt the script can see
+and has decided not to press counts as a prompt seen, so a refused prompt sitting
+under a pill does not have the transcript scrolled every couple of seconds for as
+long as it is up. And `MAX_JUMPS` attempts, `JUMP_INTERVAL_MS` apart, is the end
+of it: the failure goes in the activity log, because scrolling to the prompt is
+something the user can do and nothing else here can. The interval is the distance
+between two `Date.now()` readings inside the observer callback, not a timer, so it
+survives a throttled tab.
 
 **Categories are matched riskiest first, which is not the order they are shown
 in.** A prompt reading "deploy the build, view the plan first" matches both read
@@ -310,6 +336,12 @@ Kept because each one is a trap that is easy to reintroduce.
   Manifest V3, and it made the README simply untrue.
 - **Approvals only landed when the tab was in focus.** The click was deferred by
   300ms and Chrome throttles timers in hidden tabs.
+- **Approvals still only landed when somebody scrolled the tab.** The same
+  symptom, a different cause, and the timer fix hid it: the transcript is a
+  windowed list, so a prompt arriving while the user was scrolled up was not in
+  the document for the observer to find. Hence `reachPendingPrompt()`. Anything
+  that only ever looks at what `document.querySelectorAll` returns now has this
+  to answer for.
 - **The name.** It shipped as `AI FDE AutoAllow` in an `ai-fde-autoallow`
   folder. Renaming to `Auto FDE` changed the folder, which changes the extension
   ID that Chrome derives from an unpacked path, which means the configured base

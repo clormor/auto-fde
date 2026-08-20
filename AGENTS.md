@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             55 assertions
+npm run test:browser                             62 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -57,6 +57,15 @@ and no `dist/`.
   hidden tabs, so a deferred click means nothing gets approved until the tab is
   looked at. Click inside the MutationObserver callback, which is not throttled.
   `requestAnimationFrame` is not an escape hatch; it is paused in hidden tabs.
+- **A prompt may not be in the document at all.** The transcript is a windowed
+  list, so an approval that arrives while the user is scrolled up has no button
+  to press and produces no mutation. When a scan finds no prompt anywhere,
+  `reachPendingPrompt()` presses the page's own "Waiting for tool approval" pill
+  and puts the transcript at the bottom by assigning `scrollTop`. Keep both
+  halves: the pill is the page's intended route, the assignment is the one that
+  works in a tab Chrome has stopped painting. Keep the cap and the interval too;
+  without them a prompt this script refuses would take the scrollbar off the
+  user for good.
 - **The panel lives in a shadow root** (`#af-host`), in the system font, grouped
   into captioned sections by what each control decides. Do not move controls
   between those groups: keeping the tab awake is not a decision about which

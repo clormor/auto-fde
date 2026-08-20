@@ -63,6 +63,105 @@ const PAGE = `<!doctype html><html><body style="font-family:sans-serif">
 </script>
 </body></html>`;
 
+// A transcript shaped the way Foundry's is: a windowed list that only has the
+// rows near the scroll position in the document. The approval below is not in
+// the page at all until the list is put at the bottom, which is the state that
+// left prompts sitting unanswered until somebody scrolled the tab.
+const WINDOWED_PAGE = `<!doctype html><html><body style="margin:0">
+<div id="scroller" style="height:400px;overflow-y:auto">
+  <div style="height:4000px">transcript</div>
+</div>
+<div id="pill">239 Waiting for tool approval</div>
+
+<script>
+  window.__hits = [];
+  document.addEventListener('click', e => {
+    if (e.target.tagName === 'BUTTON' && e.target.id) window.__hits.push(e.target.id);
+  }, true);
+
+  // The windowing. The pill is inert, as a pill that only reports the state
+  // would be, so the only way to this prompt is the scroll. Every scroll is
+  // recorded: one that arrives in a single step was not animated.
+  window.__scrolls = [];
+  document.getElementById('scroller').addEventListener('scroll', () => {
+    const box = document.getElementById('scroller');
+    window.__scrolls.push(box.scrollTop);
+    if (box.scrollTop + box.clientHeight < box.scrollHeight - 1) return;
+    if (document.getElementById('offscreen')) return;
+    const row = document.createElement('div');
+    row.setAttribute('role', 'dialog');
+    row.innerHTML = '<p>Agent wants to read the pending record.</p>';
+    const b = document.createElement('button');
+    b.id = 'offscreen';
+    b.textContent = 'Allow';
+    row.appendChild(b);
+    box.appendChild(row);
+    document.getElementById('pill').remove();
+  });
+</script>
+</body></html>`;
+
+// The same situation, reached the other way: the pill is the page's own control
+// for jumping to the pending row, and there is nothing here to scroll.
+const PILL_PAGE = `<!doctype html><html><body>
+<div>transcript</div>
+<button id="pill">240 Waiting for tool approval</button>
+
+<script>
+  window.__hits = [];
+  document.addEventListener('click', e => {
+    if (e.target.tagName === 'BUTTON' && e.target.id) window.__hits.push(e.target.id);
+  }, true);
+
+  document.getElementById('pill').addEventListener('click', () => {
+    const row = document.createElement('div');
+    row.setAttribute('role', 'dialog');
+    row.innerHTML = '<p>Agent wants to read the pending record.</p>';
+    const b = document.createElement('button');
+    b.id = 'jumped';
+    b.textContent = 'Allow';
+    row.appendChild(b);
+    document.body.appendChild(row);
+    document.getElementById('pill').remove();
+  });
+</script>
+</body></html>`;
+
+// A prompt the script can see and has decided not to press, with the pill still
+// up because the page is still waiting for an answer. Going to fetch this one
+// would take the scrollbar off the user for as long as the prompt is there.
+const REFUSED_PAGE = `<!doctype html><html><body style="margin:0">
+<div id="scroller" style="height:400px;overflow-y:auto">
+  <div style="height:4000px">transcript</div>
+  <div role="dialog">
+    <p>Agent wants to delete the production dataset.</p>
+    <button id="refused">Allow</button>
+  </div>
+</div>
+<div id="pill">241 Waiting for tool approval</div>
+
+<script>
+  window.__hits = [];
+  document.addEventListener('click', e => {
+    if (e.target.tagName === 'BUTTON' && e.target.id) window.__hits.push(e.target.id);
+  }, true);
+</script>
+</body></html>`;
+
+// A pill that leads nowhere. Whatever it is up for, the script must stop trying
+// to reach it rather than scroll the page every couple of seconds for ever.
+const DEAD_PILL_PAGE = `<!doctype html><html><body>
+<div>transcript</div>
+<button id="deadpill">242 Waiting for tool approval</button>
+
+<script>
+  window.__hits = [];
+  document.addEventListener('click', e => {
+    if (e.target.tagName === 'BUTTON' && e.target.id) window.__hits.push(e.target.id);
+  }, true);
+</script>
+</body></html>`;
+
 const results = [];
 const check = (name, pass, detail = '') => {
   results.push({ name, pass });
@@ -93,10 +192,10 @@ const gone = page => page.evaluate(() => !document.getElementById('af-host'));
 // The script reads its configuration off the page because a MAIN-world script
 // cannot see chrome.storage. background.js writes it in before injecting; here
 // the test does the same thing by hand.
-async function mockPage(browser, url, config = { origins: [ORIGIN], pathMarker: '/ai-fde/' }) {
+async function mockPage(browser, url, config = { origins: [ORIGIN], pathMarker: '/ai-fde/' }, body = PAGE) {
   const page = await browser.newPage();
   await page.route('**/*', route =>
-    route.fulfill({ status: 200, contentType: 'text/html', body: PAGE }));
+    route.fulfill({ status: 200, contentType: 'text/html', body }));
   // Two things are watched from outside the extension. Every AudioContext the
   // keep-alive opens is recorded, so unticking the box can be checked for a leak.
   // Every listener the script puts on window is counted in and out, so Stop can
@@ -487,6 +586,62 @@ check('a position saved off the edge of the screen is clamped back into view',
     return r.left >= 0 && r.top >= 0
       && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1;
   }));
+
+// ---------------------------------------------------------------------------
+// A prompt that is not in the document. The transcript is a windowed list, so an
+// approval arriving while the user is scrolled up leaves nothing to press and
+// nothing for the observer to react to. Waiting does not fix it, which is what
+// made the count sit still until somebody scrolled the tab.
+// ---------------------------------------------------------------------------
+const MAX_JUMPS = 5;
+const JUMP_INTERVAL_MS = 1500;
+
+const p6 = await mockPage(browser, SESSION_URL, undefined, WINDOWED_PAGE);
+await p6.evaluate(SCRIPT);
+await p6.waitForTimeout(600);
+check('a prompt the list had not rendered is reached and approved',
+  (await p6.evaluate(() => window.__hits)).includes('offscreen'),
+  JSON.stringify(await p6.evaluate(() => window.__hits)));
+// Assigning scrollTop needs no frame, which is what makes it the half of this
+// that still works in a tab Chrome has stopped painting. A smooth scroll would
+// arrive as a run of events instead, and would not arrive at all in a tab Chrome
+// is not painting, since it is driven by frames.
+const scrolls = await p6.evaluate(() => window.__scrolls);
+check('the transcript arrives at the bottom in one step, not animated',
+  scrolls.length === 1 && scrolls[0] === 3600, JSON.stringify(scrolls));
+
+const p7 = await mockPage(browser, SESSION_URL, undefined, PILL_PAGE);
+await p7.evaluate(SCRIPT);
+await p7.waitForTimeout(600);
+check('the page\'s own pending-prompt control is pressed when there is no scroll',
+  (await p7.evaluate(() => window.__hits)).includes('jumped'),
+  JSON.stringify(await p7.evaluate(() => window.__hits)));
+
+// A refused prompt is still a prompt this script can see, and seeing one is what
+// stops it going anywhere.
+const p8 = await mockPage(browser, SESSION_URL, undefined, REFUSED_PAGE);
+await p8.evaluate(SCRIPT);
+await p8.evaluate(() => { document.getElementById('scroller').scrollTop = 0; });
+await p8.waitForTimeout(JUMP_INTERVAL_MS * 2);
+check('a prompt on screen that is refused leaves the scroll position alone',
+  (await p8.evaluate(() => document.getElementById('scroller').scrollTop)) === 0);
+check('a prompt naming a blocked word is still refused',
+  !(await p8.evaluate(() => window.__hits)).includes('refused'));
+
+// The cap. Every mutation is a chance to try again, so a pill that leads nowhere
+// has to be given up on rather than chased for as long as the panel is open.
+const p9 = await mockPage(browser, SESSION_URL, undefined, DEAD_PILL_PAGE);
+await p9.evaluate(SCRIPT);
+await p9.evaluate(() => {
+  window.__nudge = setInterval(() => document.body.appendChild(document.createElement('span')), 100);
+});
+await p9.waitForTimeout(JUMP_INTERVAL_MS * (MAX_JUMPS + 1) + 800);
+await p9.evaluate(() => clearInterval(window.__nudge));
+const deadPresses = (await p9.evaluate(() => window.__hits)).filter(h => h === 'deadpill').length;
+check(`a pill that leads nowhere is tried ${MAX_JUMPS} times and no more`,
+  deadPresses === MAX_JUMPS, `presses=${deadPresses}`);
+check('giving up on an unreachable prompt goes in the log',
+  (await text(p9, '#af-log')).includes('could not reach an off-screen prompt'));
 
 await browser.close();
 
