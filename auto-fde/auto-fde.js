@@ -115,6 +115,11 @@
     reportKeepAlive('waiting for a click on the page');
     if (awaitingGesture) return;
     awaitingGesture = true;
+    // The one setting whose failure the user has to fix, and it looks identical
+    // to success in the panel: the box is ticked, the audio is suspended, and
+    // Chrome is throttling the tab anyway. So it goes in the log with the action
+    // that clears it, the same as a resume that could not be sent.
+    appendLog(new Date().toLocaleTimeString(), 'click the page once to keep the tab awake');
     const onGesture = () => {
       disarmGesture();
       if (keepAliveOn) settleKeepAlive();
@@ -564,13 +569,18 @@
   // readings taken inside the observer callback, not a timer, so throttling in a
   // hidden tab cannot stretch it.
   const JUMP_INTERVAL_MS = 1500;
-  // A prompt still out of reach after this many attempts is reported rather than
-  // chased. Without the cap, a pill the page leaves up for something this script
-  // will never press would take the scrollbar off the user for good.
+  // Attempts this close together stop after MAX_JUMPS and carry on at
+  // JUMP_BACKOFF_MS. Stopping outright was worse than the thing it guarded
+  // against: a prompt the page would not render while the tab was hidden was
+  // then left alone for as long as the tab stayed hidden, which is the whole
+  // failure this file exists to prevent. The cap only decides how often to try,
+  // not whether to keep trying.
   const MAX_JUMPS = 5;
-  let lastJumpAt = 0, jumpAttempts = 0, gaveUp = false, scroller = null;
+  const JUMP_BACKOFF_MS = 30000;
+  let lastJumpAt = 0, jumpAttempts = 0, reportedStall = false;
+  let lastMarkerText = '', scroller = null;
 
-  function resetJumps() { jumpAttempts = 0; gaveUp = false; }
+  function resetJumps() { jumpAttempts = 0; reportedStall = false; }
 
   // The pill is found by its text rather than a class, because the class is
   // Foundry's and the sentence is the product's. A TreeWalker does not cross a
@@ -608,29 +618,54 @@
     return scroller;
   }
 
+  // What to send when a stall has to be explained. Whether the button is in the
+  // document at all is the one thing that separates a list that has not rendered
+  // the row from a row that is there and not being matched, and it cannot be
+  // read off the panel.
+  function stallReport() {
+    const labels = Array.from(document.querySelectorAll('button'))
+      .map(b => (b.innerText || b.getAttribute('aria-label') || '').trim())
+      .filter(t => /allow/i.test(t));
+    return {
+      visibility: document.visibilityState,
+      buttons: document.querySelectorAll('button').length,
+      allowLabels: labels,
+    };
+  }
+
   function reachPendingPrompt() {
     const now = Date.now();
-    if (now - lastJumpAt < JUMP_INTERVAL_MS) return;
+    const wait = jumpAttempts < MAX_JUMPS ? JUMP_INTERVAL_MS : JUMP_BACKOFF_MS;
+    if (now - lastJumpAt < wait) return;
     lastJumpAt = now;
 
     const marker = findPendingMarker();
     if (!marker) { resetJumps(); return; }
 
-    // Still pending after every attempt. Say so once and leave the page alone:
-    // this is a failure the user can act on, by scrolling to the prompt.
-    if (jumpAttempts >= MAX_JUMPS) {
-      if (!gaveUp) {
-        gaveUp = true;
-        appendLog(new Date().toLocaleTimeString(), 'could not reach an off-screen prompt');
-        console.warn('[Auto FDE] a prompt is pending off screen and will not come into reach.');
-      }
-      return;
+    // The pill names the row it is waiting on, so a pill that reads differently
+    // is a different prompt and gets the fast attempts again rather than
+    // inheriting the backoff from the one before it.
+    const label = (marker.textContent || '').trim().slice(0, 120);
+    if (label !== lastMarkerText) {
+      lastMarkerText = label;
+      resetJumps();
     }
 
     jumpAttempts++;
     marker.click();
     const box = findScroller();
     if (box) box.scrollTop = box.scrollHeight;
+
+    // Said once per prompt, at the point the fast attempts run out. It stays in
+    // the log while the slow ones carry on, because scrolling to the prompt is
+    // something the user can do and nothing here can make the page render a row
+    // it will not render.
+    if (jumpAttempts >= MAX_JUMPS && !reportedStall) {
+      reportedStall = true;
+      appendLog(new Date().toLocaleTimeString(), 'off-screen prompt still out of reach');
+      console.warn('[Auto FDE] off-screen prompt still out of reach; slowing down.', stallReport());
+      return;
+    }
     console.log(`[Auto FDE] a prompt is pending off screen; went to it (${jumpAttempts}/${MAX_JUMPS})`);
   }
 
@@ -676,6 +711,21 @@
   const observer = new MutationObserver(() => scan());
   observer.observe(document.body, { childList: true, subtree: true });
   scan();
+
+  // Chrome stops producing frames for a hidden tab, and a windowed list that
+  // needs one to mount a row will not produce the button until the tab is looked
+  // at again. That first look has to be acted on rather than waited on: the
+  // observer only fires if something changes, and a session sitting on an
+  // approval changes nothing at all, so the 2000ms backstop was the only thing
+  // left and Chrome had throttled it to once a minute. The budget is reset
+  // because being looked at is the one event that changes whether a jump can
+  // work.
+  on(document, 'visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    resetJumps();
+    lastJumpAt = 0;
+    scan();
+  });
 
   // Backstop for a prompt that somehow arrives without a mutation this observer
   // sees. This one is a timer, so it is throttled in a hidden tab, which is

@@ -628,20 +628,57 @@ check('a prompt on screen that is refused leaves the scroll position alone',
 check('a prompt naming a blocked word is still refused',
   !(await p8.evaluate(() => window.__hits)).includes('refused'));
 
-// The cap. Every mutation is a chance to try again, so a pill that leads nowhere
-// has to be given up on rather than chased for as long as the panel is open.
+// The pace, and the recovery. Every mutation is a chance to try again, so a pill
+// that leads nowhere has to be slowed down. Slowing down is all it is: stopping
+// outright is what left a session sitting for nineteen minutes behind a prompt
+// the page had not rendered, because nothing tried again.
+const deadPillPresses = page => page.evaluate(() =>
+  window.__hits.filter(h => h === 'deadpill').length);
+
 const p9 = await mockPage(browser, SESSION_URL, undefined, DEAD_PILL_PAGE);
 await p9.evaluate(SCRIPT);
 await p9.evaluate(() => {
   window.__nudge = setInterval(() => document.body.appendChild(document.createElement('span')), 100);
 });
 await p9.waitForTimeout(JUMP_INTERVAL_MS * (MAX_JUMPS + 1) + 800);
-await p9.evaluate(() => clearInterval(window.__nudge));
-const deadPresses = (await p9.evaluate(() => window.__hits)).filter(h => h === 'deadpill').length;
-check(`a pill that leads nowhere is tried ${MAX_JUMPS} times and no more`,
+const deadPresses = await deadPillPresses(p9);
+check(`a pill that leads nowhere is tried ${MAX_JUMPS} times and then slowed down`,
   deadPresses === MAX_JUMPS, `presses=${deadPresses}`);
-check('giving up on an unreachable prompt goes in the log',
-  (await text(p9, '#af-log')).includes('could not reach an off-screen prompt'));
+check('a prompt still out of reach is reported in the log',
+  (await text(p9, '#af-log')).includes('off-screen prompt still out of reach'));
+
+// Being looked at is the one event that changes whether a jump can work, because
+// Chrome starts producing frames again. It is also the only one the script can be
+// sure of, so it must not be waited on through a mutation that may never come.
+await p9.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+await p9.waitForTimeout(300);
+await p9.evaluate(() => clearInterval(window.__nudge));
+const afterLook = await deadPillPresses(p9);
+check('looking at the tab starts the attempts again rather than waiting',
+  afterLook === deadPresses + 1, `presses=${afterLook}`);
+
+// ---------------------------------------------------------------------------
+// A ticked keep-alive box whose audio never started looks exactly like one that
+// worked, and the tab is throttled either way. Chrome will not start audio
+// without a gesture on the page, and a toolbar press is not one, so the state
+// has to be said somewhere the user is already looking.
+// ---------------------------------------------------------------------------
+const p10 = await mockPage(browser, SESSION_URL);
+await p10.evaluate(() => {
+  // Stands in for Chrome's autoplay policy, which headless does not apply the
+  // same way: a context that stays suspended however often resume() is called.
+  window.AudioContext = class {
+    constructor() { this.state = 'suspended'; this.destination = {}; }
+    createOscillator() { return { frequency: {}, connect: t => t, start() {}, stop() {} }; }
+    createGain() { return { gain: {}, connect: t => t }; }
+    resume() { return Promise.resolve(); }
+    close() { this.state = 'closed'; }
+  };
+});
+await p10.evaluate(SCRIPT);
+await p10.waitForTimeout(600);
+check('a keep-alive that could not start says so in the log',
+  (await text(p10, '#af-log')).includes('click the page once to keep the tab awake'));
 
 await browser.close();
 

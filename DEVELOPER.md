@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  62 assertions: the in-page script and the packaged
+npm run test:browser  64 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -191,14 +191,39 @@ the assignment is the half that still works in a tab Chrome has stopped
 painting, since a smooth scroll is driven by frames and frames stop. A test
 asserts the scroll arrives in a single event rather than a run of them.
 
-Two limits keep that from becoming its own problem. A prompt the script can see
-and has decided not to press counts as a prompt seen, so a refused prompt sitting
-under a pill does not have the transcript scrolled every couple of seconds for as
-long as it is up. And `MAX_JUMPS` attempts, `JUMP_INTERVAL_MS` apart, is the end
-of it: the failure goes in the activity log, because scrolling to the prompt is
-something the user can do and nothing else here can. The interval is the distance
-between two `Date.now()` readings inside the observer callback, not a timer, so it
-survives a throttled tab.
+A prompt the script can see and has decided not to press counts as a prompt
+seen, so a refused prompt sitting under a pill does not have the transcript
+scrolled every couple of seconds for as long as it is up. `MAX_JUMPS` attempts
+`JUMP_INTERVAL_MS` apart then back off to `JUMP_BACKOFF_MS`, and the pill's text
+names the row it is waiting on, so a different pill is a different prompt and
+gets the fast attempts again. The interval is the distance between two
+`Date.now()` readings inside the observer callback, not a timer, so it survives a
+throttled tab.
+
+**The cap sets the pace, not whether to keep trying.** It shipped as a hard stop
+and that was worse than the bug it guarded against. A session sat for nineteen
+minutes behind a prompt the page had not rendered: five attempts failed inside
+half a minute, the panel logged that it had given up, and then nothing tried
+again until the tab was clicked. What that reveals is a second reason a row can
+be missing, on top of being outside the rendered range: Chrome stops producing
+frames for a hidden tab, and a list that mounts rows off a `ResizeObserver` or an
+`IntersectionObserver` cannot mount anything until the tab is looked at, because
+those callbacks are delivered with the frame. No amount of scrolling reaches a
+row in that state, so the only correct behaviour is to keep trying slowly and to
+try properly again the moment the tab is visible.
+
+**Being looked at is an event to act on.** Hence the `visibilitychange`
+listener, which scans and resets the jump budget. It is not a convenience: a
+session sitting on an approval mutates nothing, so the observer never fires, and
+the 2000ms backstop is exactly the throttled timer that cannot be relied on.
+Without the listener the first thing to notice the tab was back was whatever the
+page happened to redraw.
+
+When the fast attempts run out, `stallReport()` goes to the console with
+`document.visibilityState`, the number of buttons in the document and any button
+label containing "allow". Whether the button is in the document at all is what
+separates a list that has not rendered the row from a row that is there and not
+being matched, and it cannot be read off the panel.
 
 **Categories are matched riskiest first, which is not the order they are shown
 in.** A prompt reading "deploy the build, view the plan first" matches both read
@@ -249,10 +274,15 @@ ticked box is not proof that any audio is playing. `settleKeepAlive()` calls
 
 Neither setting carries a status field in the panel: each hint says what the
 setting does, not what it is currently doing. `reportKeepAlive()` and
-`reportResume()` log the state to the console instead, which is enough to check
-"ticked but suspended" when it matters. The exception is a resume that fails to
-send, which goes into the activity log, because a silent failure is the one
-thing that cannot be assumed away.
+`reportResume()` log the state to the console instead. Failures are the
+exception, and they go in the activity log, because a silent failure is the one
+thing that cannot be assumed away: a resume that could not be sent, a prompt
+that cannot be reached, and the keep-alive waiting for its gesture. That last
+one earns its line because a ticked box with a suspended context looks exactly
+like one that worked while the tab is being throttled anyway, and one click on
+the page fixes it. A browser test covers it with a stub context that stays
+suspended, since headless Chromium does not apply the autoplay policy the same
+way.
 
 **Failures go in the tooltip.** Anything the service worker logs lands in the
 service worker console, which is a different console from the page's and which
@@ -342,6 +372,10 @@ Kept because each one is a trap that is easy to reintroduce.
   the document for the observer to find. Hence `reachPendingPrompt()`. Anything
   that only ever looks at what `document.querySelectorAll` returns now has this
   to answer for.
+- **And then only when somebody clicked the tab.** `reachPendingPrompt()`
+  shipped with a hard cap on attempts, so a prompt the page would not render
+  while the tab was hidden was logged as unreachable and never tried again. The
+  cap now backs off instead of stopping, and `visibilitychange` is acted on.
 - **The name.** It shipped as `AI FDE AutoAllow` in an `ai-fde-autoallow`
   folder. Renaming to `Auto FDE` changed the folder, which changes the extension
   ID that Chrome derives from an unpacked path, which means the configured base

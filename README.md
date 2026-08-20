@@ -63,8 +63,15 @@ Two settings sit below the categories:
 If a prompt arrives while you are scrolled up the transcript, the panel scrolls
 you to the bottom to reach it. Foundry only keeps the part of a long session you
 are looking at on the page, so there is no other way to press a button that is
-not there. If it cannot get to one, the log says so and you can scroll to it
-yourself.
+not there. If it cannot get to one it keeps trying, more slowly, and says so in
+the log.
+
+One thing is worth knowing about long sessions in a background tab. Chrome stops
+drawing a tab you are not looking at, and Foundry will not add a message to a
+page it is not drawing, so a prompt can arrive with nothing on the page to press.
+The panel acts the instant you come back to the tab, and clicking once in the tab
+after you open the panel is worth doing anyway, since that is what lets the
+keep-alive start. If it has not started, the log says so.
 
 **Stop** shuts it down, and so does reloading the page. Press the toolbar button
 again to start it back up.
@@ -86,10 +93,15 @@ the **service worker** console, reached by the link of that name on the same
 card.
 
 **A prompt sitting unanswered.** The panel goes and gets prompts that are off
-screen, so this should be rare. When it happens the log line reads `could not
-reach an off-screen prompt`: scroll to the prompt and it will be pressed. A
-prompt that stays put once it is in front of you is one the panel is refusing,
-either because its category is unticked or because the prompt mentions deleting,
-forcing or production.
+screen, so this should be rare while you are in the tab. When it cannot, the log
+reads `off-screen prompt still out of reach`, and switching to the tab will
+settle it. A prompt that stays put once it is in front of you is a different
+thing: that one is being refused, either because its category is unticked or
+because the prompt mentions deleting, forcing or production.
+
+**`click the page once to keep the tab awake` in the log.** Chrome will not let a
+page start audio until somebody touches it, and the keep-alive is that audio, so
+until you click anywhere in the tab Chrome throttles it. Click once and the line
+stops appearing.
 
 Anything beyond that is in [DEVELOPER.md](DEVELOPER.md).

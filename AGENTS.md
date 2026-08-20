@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             62 assertions
+npm run test:browser                             64 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -63,9 +63,14 @@ and no `dist/`.
   `reachPendingPrompt()` presses the page's own "Waiting for tool approval" pill
   and puts the transcript at the bottom by assigning `scrollTop`. Keep both
   halves: the pill is the page's intended route, the assignment is the one that
-  works in a tab Chrome has stopped painting. Keep the cap and the interval too;
-  without them a prompt this script refuses would take the scrollbar off the
-  user for good.
+  works in a tab Chrome has stopped painting. `MAX_JUMPS` sets the pace, not
+  whether to keep trying: it must back off to `JUMP_BACKOFF_MS` and never stop,
+  because a page that will not render a row while the tab is hidden renders it
+  the moment the tab is looked at.
+- **Being looked at is an event to act on, not to wait through.** A session
+  sitting on an approval mutates nothing, so the observer never fires and the
+  backstop timer is throttled to once a minute. The `visibilitychange` listener
+  scans immediately and resets the jump budget. Do not remove it.
 - **The panel lives in a shadow root** (`#af-host`), in the system font, grouped
   into captioned sections by what each control decides. Do not move controls
   between those groups: keeping the tab awake is not a decision about which
@@ -75,8 +80,10 @@ and no `dist/`.
   PNGs are generated from it with `npm run icons`; never hand-edit them, and
   re-run it after changing the mark.
 - **Settings hints say what a setting does, not what it is doing.** There are no
-  status readouts in the panel; state goes to the console. A genuine failure,
-  such as a resume that could not be sent, goes in the activity log.
+  status readouts in the panel; state goes to the console. A genuine failure
+  goes in the activity log: a resume that could not be sent, a prompt that
+  cannot be reached, or a keep-alive still waiting for the click on the page
+  that Chrome requires before it will start audio.
 - **Pause and stop live in the header**, as icons, so they work while the panel
   is collapsed. Do not move them into a footer. The glyph shows the action, the
   colour shows the current state.
