@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             70 assertions
+npm run test:browser                             73 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -77,6 +77,16 @@ and no `dist/`.
   not drawing the tab, and no button in the document means nothing to press. The
   answer is a visible window, which the README says, or Foundry's own API, which
   is a different tool. Do not spend another round on the DOM.
+- **A console paste and an injection are the same thing.** Identical source, same
+  world. If background behaviour differs between them the reason is elsewhere,
+  usually session length: a short transcript is not windowed, so a row is in the
+  document as soon as React commits it, and a commit needs no frame. Do not add a
+  clipboard mode to chase this.
+- **`watchTraffic()` logs no headers.** It is the capture step for sending an
+  approval rather than clicking one, reached from the console as
+  `window.__autoFde.watchTraffic()`, and its output gets pasted into chat
+  windows. Bodies truncated, headers never. Stop unwraps `fetch`,
+  `XMLHttpRequest` and `WebSocket.prototype.send`.
 - **The visibility spoof answers the page, not the browser.** `document.hidden`
   and `document.visibilityState` report visible and the going-hidden event is
   stopped at the window in the capture phase, so the page does not stand down of

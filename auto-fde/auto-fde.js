@@ -317,6 +317,82 @@
     recovering = false;
   }
 
+  // ---------- Traffic watch ----------
+  // A diagnostic, off until it is asked for from the console as
+  // window.__autoFde.watchTraffic(). It is not in the panel because it is not a
+  // decision anyone makes while using this; it is one step in working out whether
+  // an approval can be sent rather than clicked.
+  //
+  // Why it exists: the DOM route cannot reach a prompt in a tab Chrome is not
+  // drawing, because the row is not in the document to be reached. Sending the
+  // approval the way the page sends it would work in any tab, and the only thing
+  // that knows what the page sends is the page. So this logs the request going
+  // out when an approval is granted: method, URL, and a truncated body.
+  //
+  // Never a header. That is where the session token is, and this writes to a
+  // console whose contents get copied into chat windows.
+  const APPROVAL_TRAFFIC = /approv/i;
+  const BODY_LIMIT = 800;
+  let watching = false;
+
+  function watchTraffic(options) {
+    const everything = !!(options && options.all);
+    if (watching) {
+      console.log('[Auto FDE] traffic watch is already on');
+      return;
+    }
+    watching = true;
+
+    const report = (how, url, body) => {
+      const text = typeof body === 'string' ? body : (body == null ? '' : String(body));
+      const matched = APPROVAL_TRAFFIC.test(url) || APPROVAL_TRAFFIC.test(text);
+      if (!matched && !everything) return;
+      // The colon is load-bearing: it is what the line the user is asked to copy
+      // has and the banner below does not.
+      console.log(`[Auto FDE] traffic: ${how} ${url}`
+        + (text ? `\n${text.slice(0, BODY_LIMIT)}` : ''));
+    };
+
+    const realFetch = window.fetch;
+    const realOpen = XMLHttpRequest.prototype.open;
+    const realSend = XMLHttpRequest.prototype.send;
+    const realWsSend = WebSocket.prototype.send;
+
+    // A Request object carries its body in a stream that reading would consume,
+    // so only the URL is taken from one. The page's own approval call is the one
+    // that matters and applications send those with an init body.
+    window.fetch = function (input, init) {
+      const url = typeof input === 'string' ? input : (input && input.url) || '';
+      report('fetch', url, init && init.body);
+      return realFetch.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.open = function (method, url) {
+      this.__autoFdeUrl = url;
+      return realOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function (body) {
+      report('xhr', this.__autoFdeUrl || '', body);
+      return realSend.apply(this, arguments);
+    };
+    WebSocket.prototype.send = function (data) {
+      report('ws', this.url || '', typeof data === 'string' ? data : '[binary]');
+      return realWsSend.apply(this, arguments);
+    };
+
+    // Stop has to undo everything, and a wrapped fetch left on a page whose
+    // panel has been removed is exactly the kind of thing that rule is for.
+    teardown.push(() => {
+      window.fetch = realFetch;
+      XMLHttpRequest.prototype.open = realOpen;
+      XMLHttpRequest.prototype.send = realSend;
+      WebSocket.prototype.send = realWsSend;
+      watching = false;
+    });
+
+    console.log(`[Auto FDE] traffic watch is on${everything ? ', logging everything' : ''}.`
+      + ' Approve one prompt, then copy every line starting "[Auto FDE] traffic:".');
+  }
+
   // ---------- UI panel ----------
   // The panel lives in a shadow root. It is injected into somebody else's
   // application, so isolation cuts both ways: Foundry ships Blueprint, which
@@ -883,6 +959,10 @@
     }));
   });
 
-  window.__autoFde = { show: () => { host.style.display = 'block'; }, stop: () => stopBtn.click() };
+  window.__autoFde = {
+    show: () => { host.style.display = 'block'; },
+    stop: () => stopBtn.click(),
+    watchTraffic,
+  };
   console.log('[Auto FDE] Running on', location.href);
 })();

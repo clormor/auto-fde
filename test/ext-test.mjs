@@ -565,6 +565,35 @@ check('the paused glyph is a different colour from the running one',
   afterPause.colour !== beforePause.colour,
   `${beforePause.colour} -> ${afterPause.colour}`);
 
+// ---------------------------------------------------------------------------
+// The traffic watch. It is reached from the console rather than the panel,
+// because it is a step in working out whether an approval can be sent instead of
+// clicked, not a decision anyone makes while using this. It must log the request
+// going out and it must never log a header, which is where the session token is.
+// ---------------------------------------------------------------------------
+const seen = [];
+const collect = msg => seen.push(msg.text());
+p1.on('console', collect);
+await p1.evaluate(async () => {
+  window.__autoFde.watchTraffic();
+  await fetch('/api/session/approve', {
+    method: 'POST',
+    headers: { authorization: 'Bearer do-not-log-me' },
+    body: '{"toolCallId":"abc123","approved":true}',
+  });
+  await fetch('/api/session/unrelated', { method: 'POST', body: '{"noise":true}' });
+});
+await p1.waitForTimeout(300);
+p1.off('console', collect);
+
+const traffic = seen.filter(t => t.startsWith('[Auto FDE] traffic: '));
+check('the traffic watch logs the request an approval goes out on',
+  traffic.length === 1 && traffic[0].includes('/api/session/approve')
+    && traffic[0].includes('"toolCallId":"abc123"'),
+  JSON.stringify(traffic));
+check('the traffic watch logs no headers, so no session token',
+  !seen.some(t => t.includes('do-not-log-me')));
+
 await p1.evaluate(SCRIPT);
 check('re-injecting does not stack a second panel',
   (await p1.evaluate(() => document.querySelectorAll('#af-host').length)) === 1);
@@ -572,6 +601,10 @@ check('re-injecting does not stack a second panel',
 await press(p1, '#af-stop');
 check('stop removes the panel and the handle',
   await p1.evaluate(() => !document.getElementById('af-host') && !window.__autoFde));
+// A wrapped fetch left behind on a page whose panel has been removed is the same
+// class of leak as a listener left on window.
+check('stop unwraps the traffic watch',
+  await p1.evaluate(() => !/traffic/.test(window.fetch.toString())));
 // Stop can be followed by another press of the toolbar button on the same page,
 // so a listener left on window is a leak that compounds.
 const leftOnWindow = await p1.evaluate(() =>

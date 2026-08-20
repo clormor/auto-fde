@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  70 assertions: the in-page script and the packaged
+npm run test:browser  73 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -253,6 +253,38 @@ present but unmatched cannot be mistaken for a row that is absent. `labelFor()`
 falls back to `textContent` for the same reason, and a test covers a button whose
 label is inside a `display:none` child, where `innerText` is empty and the button
 is real.
+
+**Pasting the script into the console is not different from injecting it.** This
+comes up because the tool started life as a console paste and seemed to work in
+the background then. Delivery cannot be the reason. Both routes run the identical
+source in the page's own world, and the thing that fails is a property of the
+page: there is no button in the document. What actually changed is session
+length. A short transcript is not windowed, so a new row is in the document as
+soon as React commits it, and a commit needs no frame. Long transcripts are
+windowed, and mounting a row in one needs a measurement that needs a frame. So it
+did work, and it stopped working as sessions got longer, not as the delivery
+changed.
+
+The one real difference with DevTools open is that Chrome exempts the page from
+freezing and discarding, which matters for timers rather than for mounting. If
+that is ever in doubt, the way to test it is to leave DevTools open on the tab and
+background it with the extension unchanged: same code, one variable. There is no
+point building a clipboard-paste mode to answer it.
+
+**`window.__autoFde.watchTraffic()`** is the first step of the other route, and
+the only one that needs a real session. It wraps `fetch`, `XMLHttpRequest` and
+`WebSocket.prototype.send`, and logs the method, URL and a truncated body of any
+outgoing request whose URL or body matches `/approv/i`. `watchTraffic({ all:
+true })` logs every outgoing request instead, for when the approval call is not
+named after what it does. It logs no headers, deliberately: that is where the
+session token is, and these lines get copied into chat windows. Stop unwraps all
+four, and a test asserts both the log line and the absence of the header.
+
+It is reached from the console rather than the panel because it is not a decision
+anyone makes while using this. Detection is already solved for the API route, as
+it happens: the pending pill is in the document even in a hidden tab, which is how
+`reachPendingPrompt()` knows to run at all. What is missing is what the page sends
+and whether every part of it can be assembled without the row.
 
 **The visibility spoof is what is left of the page's half, and it answers the
 page rather than the browser.** `document.hidden` and `document.visibilityState` are given own
