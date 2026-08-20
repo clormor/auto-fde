@@ -240,7 +240,7 @@
         overflow: auto;
         /* Translucent, so the page underneath stays partly readable. The blur is
            what keeps the text on top legible over whatever it happens to cover. */
-        background: rgba(23, 27, 33, .38);
+        background: rgba(23, 27, 33, .25);
         -webkit-backdrop-filter: blur(12px) saturate(1.4);
         backdrop-filter: blur(12px) saturate(1.4);
         color: #f2f4f8;

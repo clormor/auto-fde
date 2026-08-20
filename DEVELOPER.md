@@ -106,15 +106,19 @@ pressing it will do, standard transport icons, and the colour says what it is
 doing now, green while running and amber while paused. Both halves are asserted,
 including that the two colours differ.
 
-The panel is translucent with a `backdrop-filter` blur, so the page underneath
-stays partly readable. Two things there are load-bearing rather than decorative.
-The blur, because without it the panel's own text is unreadable over busy
-content. And the `text-shadow` on `.panel`, because at this level of transparency
-the panel takes on whatever colour is behind it, and the secondary text, section
-captions and log timestamps do not survive a light background without it. On
-Foundry's own dark chrome the shadow is invisible. Both were checked by rendering
-the panel over a bright gradient as well as a dark one; if the transparency goes
-up again, check it the same way rather than trusting the dark case.
+The panel is translucent, `rgba(23, 27, 33, .25)` over a 12px `backdrop-filter`
+blur, so the page underneath stays readable through it. Two things there are
+load-bearing rather than decorative. The blur, because without it the panel's own
+text is unreadable over busy content. And the `text-shadow` on `.panel`, because
+at a quarter opacity the panel takes on whatever colour is behind it, and the
+secondary text, section captions and log timestamps do not survive a light
+background without it. On Foundry's own dark chrome the shadow is invisible.
+
+At `.25` the hints and timestamps are near the floor of comfortable contrast on a
+light background. Both were checked by rendering the panel over a bright gradient
+as well as a dark one; if the transparency goes up again, check it the same way
+rather than trusting the dark case, and expect to have to lift the muted greys
+again or thicken the shadow.
 
 **The mark is a loop around a diamond, not a diamond.** A bare AI FDE diamond
 read as part of the product rather than as something clicking through it. The
