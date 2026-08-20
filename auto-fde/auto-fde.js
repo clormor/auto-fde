@@ -866,6 +866,8 @@
   // The difference is the target state, stated by the application rather than
   // guessed at. `pending_approval` is known; what replaces it is not.
   let awaitingGrant = null, grantRead = false;
+  let reportedStateFailure = false;
+  const refusedWithoutARow = new Set();
 
   function safeSnapshot(store) {
     try {
@@ -938,11 +940,127 @@
     if (!holder) return;
     const after = shorten(JSON.stringify(holder.toolResponse), GRANT_LIMIT);
     if (after === awaitingGrant.before) return;
+    // The whole point of reading it: this is what an approval writes, taken from
+    // an approval that worked, in this session, on this build of Foundry. It is
+    // what a prompt with no row to press gets set to.
+    learnedResponse = holder.toolResponse;
     console.log(`[Auto FDE] store grant: item ${awaitingGrant.id}`
       + `\n  toolResponse before: ${awaitingGrant.before}`
       + `\n  toolResponse after:  ${after}`);
+    appendLog(new Date().toLocaleTimeString(), 'learned how an approval is written');
     awaitingGrant = null;
     grantRead = true;
+  }
+
+  // ---------- Answering a prompt with no row ----------
+  // The end of the road this has been walking. A prompt in a hidden tab has no
+  // button, because Chrome draws no frames and the list mounts no row, but the
+  // pending item is in the store and the store is reachable. So the answer is
+  // written into the store instead, exactly as a real click writes it.
+  //
+  // Nothing here is guessed. learnedResponse is the toolResponse that a click
+  // this panel made produced, read back out of the store afterwards, so the value
+  // comes from this session and this build rather than from a constant that would
+  // rot. Until a click has been seen, this does nothing at all.
+  const UPSERT_EVENT = 'upsertChildContextItem';
+  // What a real click was measured to write, so the feature works from the first
+  // prompt rather than only after one has been answered in front of somebody.
+  // Learning still wins when it happens, because a measured constant is a
+  // constant that can rot, and the learned one comes from the running build.
+  const DEFAULT_RESPONSE = { state: 'requested' };
+  const STATE_INTERVAL_MS = 1000;
+  let learnedResponse = null;
+  let stateApprovals = false;
+  let lastStateTryAt = 0;
+
+  // A function threaded down through props, taken from wherever it is still
+  // mounted. startAgentLoop is in reach from the pill, which is what makes this
+  // work with no row.
+  function findFn(el, name) {
+    let fiber = fiberFor(el);
+    for (let level = 0; fiber && level < STORE_LEVELS; level++, fiber = fiber.return) {
+      const props = fiber.memoizedProps;
+      if (props && typeof props === 'object' && typeof props[name] === 'function') {
+        return props[name];
+      }
+    }
+    return null;
+  }
+
+  function sendEvent(store, event) {
+    if (typeof store.dispatch !== 'function') return false;
+    try {
+      store.dispatch(event);
+      return true;
+    } catch (err) {
+      console.warn(`[Auto FDE] state approval: dispatch threw: ${err.message}`);
+      return false;
+    }
+  }
+
+  // What a prompt is asking for, as well as it can be known without the row. The
+  // tool's name and its arguments are better than what the DOM route reads off a
+  // rendered prompt, so the block list and the categories apply here too.
+  function stateContextFor(item) {
+    return `${item.toolName || ''} ${item.toolDisplayName || ''} `
+      .concat(JSON.stringify(item.toolRequest || {})).toLowerCase();
+  }
+
+  function answerWithoutARow(anchor) {
+    if (!stateApprovals) return false;
+    const response = learnedResponse || DEFAULT_RESPONSE;
+    const found = getStore(anchor);
+    if (!found) return false;
+    const snapshot = safeSnapshot(found.store);
+    const map = snapshot && snapshot.contextMap;
+    if (!map) return false;
+    const pending = findPendingItem(map, 'contextMap', 0);
+    if (!pending || !pending.item.id) return false;
+
+    const context = stateContextFor(pending.item);
+    if (BLOCKED_CONTEXT.some(word => context.includes(word))) {
+      if (!refusedWithoutARow.has(pending.item.id)) {
+        refusedWithoutARow.add(pending.item.id);
+        appendLog(new Date().toLocaleTimeString(), `refused ${pending.item.toolName || 'a prompt'}`);
+      }
+      return false;
+    }
+    const cat = categoryFor(context);
+    if (!cat.enabled) return false;
+
+    // Only the response changes. Everything else on the item is the page's, and
+    // rewriting any of it would be rewriting somebody's transcript.
+    const item = Object.assign({}, pending.item, { toolResponse: response });
+    if (!sendEvent(found.store, { type: UPSERT_EVENT, contextItem: item })) return false;
+
+    // Verified rather than assumed. If the store did not take it, say so once and
+    // leave the prompt alone: a half-answered prompt is worse than a waiting one.
+    const now = safeSnapshot(found.store);
+    const holder = now && now.contextMap ? findToolResponse(now.contextMap[pending.item.id], 0) : null;
+    const settled = holder && JSON.stringify(holder.toolResponse) === JSON.stringify(response);
+    if (!settled) {
+      if (!reportedStateFailure) {
+        reportedStateFailure = true;
+        appendLog(new Date().toLocaleTimeString(), 'the session would not take the answer');
+        console.warn('[Auto FDE] state approval: the store did not take the answer.');
+      }
+      return false;
+    }
+
+    // The click sends changeRequestStatus after the upsert, which is what
+    // startAgentLoop does, so the loop is started rather than the status forged.
+    const start = findFn(anchor, 'startAgentLoop');
+    if (start) {
+      try {
+        start();
+      } catch (err) {
+        console.warn(`[Auto FDE] state approval: startAgentLoop threw: ${err.message}`);
+      }
+    } else {
+      console.warn('[Auto FDE] state approval: no startAgentLoop in reach.');
+    }
+    record(pending.item.toolName || 'prompt', `${cat.id} · no row`);
+    return true;
   }
 
   function probeFrom(el, what) {
@@ -1146,6 +1264,12 @@
             <span>Tell the page the tab is visible</span>
           </label>
           <div class="hint">Stops Foundry standing down while you work elsewhere.</div>
+          <label class="row" style="margin-top:5px">
+            <input type="checkbox" id="af-state">
+            <span>Answer prompts with no button</span>
+          </label>
+          <div class="hint">Writes the answer into the session's own state, which is
+            the only thing that reaches a prompt in a background tab.</div>
         </div>
 
         <div class="sec">
@@ -1213,6 +1337,16 @@
 
   // Ticked by default, because working in another tab is the reason this exists
   // and it costs nothing when the tab is in front.
+  // Unticked by default, and the only setting here that is. It writes into a live
+  // session rather than pressing something the page put there, and that is a
+  // decision to take deliberately rather than one to inherit from a default.
+  const stateBox = shadow.querySelector('#af-state');
+  stateBox.onchange = e => {
+    stateApprovals = e.target.checked;
+    console.log(`[Auto FDE] answer prompts with no button: ${stateApprovals ? 'On' : 'Off'}`);
+  };
+  stateApprovals = stateBox.checked;
+
   const visibleBox = shadow.querySelector('#af-visible');
   visibleBox.onchange = e => {
     e.target.checked ? startVisibilitySpoof() : stopVisibilitySpoof();
@@ -1373,6 +1507,19 @@
 
   function reachPendingPrompt() {
     const now = Date.now();
+
+    // The state route goes first and on its own clock. It is not scrolling and
+    // must not inherit the jump backoff: a prompt that can be answered outright
+    // should not wait thirty seconds because five scrolls failed before it.
+    if (stateApprovals && now - lastStateTryAt >= STATE_INTERVAL_MS) {
+      lastStateTryAt = now;
+      const pendingMarker = findPendingMarker();
+      if (pendingMarker && answerWithoutARow(pendingMarker)) {
+        resetJumps();
+        return;
+      }
+    }
+
     const wait = jumpAttempts < MAX_JUMPS ? JUMP_INTERVAL_MS : JUMP_BACKOFF_MS;
     if (now - lastJumpAt < wait) return;
     lastJumpAt = now;

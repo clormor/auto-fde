@@ -252,6 +252,62 @@ const DEAD_PILL_PAGE = `<!doctype html><html><body>
 </script>
 </body></html>`;
 
+// The state of a hidden tab, as measured: a pending pill, no row, no button, and
+// the pending item sitting in a store that is still reachable. The one shape
+// where answering has to happen without anything to press.
+const STATE_PAGE = `<!doctype html><html><body>
+<div>transcript</div>
+<div id="pill">243 Waiting for tool approval</div>
+
+<script>
+  window.__events = [];
+  window.__loops = 0;
+  const state = {
+    contextMap: {
+      'item-7': {
+        id: 'item-7',
+        type: 'tool-usage',
+        toolName: 'container_transform_preview',
+        toolRequest: { branch: 'main' },
+        toolResponse: { state: 'pending_approval' },
+      },
+    },
+  };
+  const store = {
+    getSnapshot: () => state,
+    dispatch: event => {
+      window.__events.push(event);
+      // Applied, the way the real store applies it, so the verification step has
+      // something true to read rather than its own optimism.
+      const target = state.contextMap[event.contextItem.id];
+      if (target) target.toolResponse = event.contextItem.toolResponse;
+    },
+    subscribe: () => {},
+    agent: { onEvent: () => {} },
+  };
+  document.getElementById('pill')['__reactFiber$mock'] = {
+    type: { name: 'PendingApprovalPill' },
+    memoizedProps: {},
+    return: {
+      type: { name: 'AgentLoopHost' },
+      memoizedProps: { startAgentLoop: () => { window.__loops++; } },
+      return: {
+        type: { displayName: 'AgentStoreProvider' },
+        memoizedProps: { value: store },
+        return: null,
+      },
+    },
+  };
+</script>
+</body></html>`;
+
+// The same, asking for something the block list refuses. Nothing about having no
+// button makes a prompt safer, and the tool's name and arguments say more about
+// what is being asked than a rendered prompt does.
+const STATE_BLOCKED_PAGE = STATE_PAGE
+  .replace("toolName: 'container_transform_preview'", "toolName: 'delete_dataset'")
+  .replace("toolRequest: { branch: 'main' }", "toolRequest: { dataset: 'production-events' }");
+
 const results = [];
 const check = (name, pass, detail = '') => {
   results.push({ name, pass });
@@ -1087,6 +1143,56 @@ check('unticking hands the page its real visibility back',
   await p11.evaluate(() => document.visibilityState === 'hidden' && document.hidden === true));
 check('and the page hears the event again once it is unticked',
   (await p11.evaluate(() => window.__pageHeard.length)) === 2);
+
+// ---------------------------------------------------------------------------
+// Answering a prompt with no button. This is the only path that reaches a prompt
+// in a background tab, because there the row is never in the document: measured
+// three times over as visibility=hidden, allow=[none], allowByText=0, with the
+// pending item present in the store the whole time.
+// ---------------------------------------------------------------------------
+const p12 = await mockPage(browser, SESSION_URL, undefined, STATE_PAGE);
+await p12.evaluate(SCRIPT);
+await p12.waitForTimeout(600);
+// Unticked by default: writing into a live session is a decision to take, not
+// one to inherit.
+check('a prompt with no button is left alone until it is asked for',
+  (await p12.evaluate(() => window.__events)).length === 0
+    && !(await p12.evaluate(() => document.getElementById('af-host')
+      .shadowRoot.querySelector('#af-state').checked)));
+
+// Ticking the box changes nothing in the light DOM, and these pages are static,
+// so without a nudge the only scan is the 2000ms backstop and the test is a race
+// against it.
+await press(p12, '#af-state');
+await p12.evaluate(() => document.body.appendChild(document.createElement('span')));
+await p12.waitForTimeout(400);
+const stateEvents = await p12.evaluate(() => window.__events);
+check('a prompt with no button is answered in the session state',
+  stateEvents.length === 1
+    && stateEvents[0].type === 'upsertChildContextItem'
+    && stateEvents[0].contextItem.id === 'item-7'
+    && JSON.stringify(stateEvents[0].contextItem.toolResponse) === '{"state":"requested"}',
+  JSON.stringify(stateEvents));
+// The click sends changeRequestStatus after the upsert, and that is what
+// startAgentLoop does, so the loop is started rather than the status forged.
+check('the agent loop is started, not the request status forged',
+  (await p12.evaluate(() => window.__loops)) === 1);
+check('only the response is rewritten, never the rest of the item',
+  stateEvents[0] && stateEvents[0].contextItem.toolName === 'container_transform_preview'
+    && stateEvents[0].contextItem.toolRequest.branch === 'main');
+check('an answer with no button is counted and logged like any other',
+  (await text(p12, '#af-count')) === '1'
+    && (await text(p12, '#af-log')).includes('no row'));
+
+const p13 = await mockPage(browser, SESSION_URL, undefined, STATE_BLOCKED_PAGE);
+await p13.evaluate(SCRIPT);
+await press(p13, '#af-state');
+await p13.evaluate(() => document.body.appendChild(document.createElement('span')));
+await p13.waitForTimeout(400);
+check('a prompt the block list refuses is refused here too',
+  (await p13.evaluate(() => window.__events)).length === 0
+    && (await text(p13, '#af-log')).includes('refused delete_dataset'),
+  await text(p13, '#af-log'));
 
 await browser.close();
 
