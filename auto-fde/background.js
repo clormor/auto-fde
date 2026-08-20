@@ -52,6 +52,12 @@ const ICON_INACTIVE = {
 };
 
 async function refreshButton(tabId, url) {
+  // chrome.action.setIcon with no tab id sets the icon for every tab rather than
+  // doing nothing, so one tab Chrome will not give an id for, a devtools window
+  // among them, would repaint the whole toolbar from that tab's address.
+  // chrome.tabs.TAB_ID_NONE is -1.
+  if (typeof tabId !== "number" || tabId < 0) return;
+
   const origins = await readOrigins();
   const state = describeButtonState(url, origins);
   try {
@@ -116,7 +122,7 @@ chrome.tabs.onActivated.addListener(async ({ tabId }) => {
 });
 
 async function start(tab) {
-  if (!tab || !tab.id) return;
+  if (!tab || typeof tab.id !== "number") return;
 
   const origins = await readOrigins();
   if (origins.length === 0) {

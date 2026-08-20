@@ -21,22 +21,49 @@
   }
 
   const TARGET_LABELS = ['allow', 'allow once'];
-  const BLOCK_SUBSTRINGS = ['always', 'all future', 'forever', 'delete', 'force', 'production', 'deny'];
 
+  // Words that stop a prompt being clicked whatever its category is. They are
+  // matched against the prompt's text, not the button's label, because the label
+  // needs no list of its own: TARGET_LABELS is an exact match, so `Always allow`,
+  // `Allow all future` and `Deny` are already excluded by it. What an exact label
+  // match cannot see is what is being asked for, which is where the risk sits.
+  // `always` and `forever` are deliberately not here: a prompt offering `Allow`
+  // beside `Always allow` carries the second label in its own text, and blocking
+  // on it would refuse the ordinary case.
+  const BLOCKED_CONTEXT = ['delete', 'force', 'production'];
+
+  // `risk` is the order the categories are matched in, highest first, and it is
+  // not the order they are displayed in. A prompt matching more than one has to
+  // be judged by the riskiest thing it matches, or `Deploy the build, view the
+  // plan first` counts as read-only and goes through with the deploy category
+  // switched off. `other` matches everything, so it sits at the bottom.
   const CATEGORIES = [
-    { id: 'read',   label: 'Read-only actions',      enabled: true,  match: t => /read|view|preview|list/i.test(t) },
-    { id: 'write',  label: 'Write / edit actions',    enabled: true,  match: t => /write|edit|update|create/i.test(t) },
-    { id: 'deploy', label: 'Deploy / build actions',  enabled: false, match: t => /deploy|build|publish|run/i.test(t) },
-    { id: 'other',  label: 'Unclassified',            enabled: true,  match: () => true },
+    { id: 'read',   label: 'Read-only actions',      enabled: true,  risk: 1, match: t => /read|view|preview|list/i.test(t) },
+    { id: 'write',  label: 'Write / edit actions',    enabled: true,  risk: 2, match: t => /write|edit|update|create/i.test(t) },
+    { id: 'deploy', label: 'Deploy / build actions',  enabled: false, risk: 3, match: t => /deploy|build|publish|run/i.test(t) },
+    { id: 'other',  label: 'Unclassified',            enabled: true,  risk: 0, match: () => true },
   ];
-  function categoryFor(btn) {
+  const BY_RISK = [...CATEGORIES].sort((a, b) => b.risk - a.risk);
+
+  function promptContextFor(btn) {
     const container = btn.closest('[role="dialog"], [role="alertdialog"], .dialog, .modal') || btn.parentElement;
-    const context = (container?.innerText || '').slice(0, 400);
-    return CATEGORIES.find(c => c.match(context)) || CATEGORIES[CATEGORIES.length - 1];
+    return (container?.innerText || '').slice(0, 400).toLowerCase();
+  }
+  function categoryFor(context) {
+    return BY_RISK.find(c => c.match(context));
   }
 
   const clicked = new WeakSet();
   let active = true, count = 0;
+
+  // Stop can be followed by another press of the toolbar button on the same
+  // page, so anything registered outside the panel has to be undone rather than
+  // left behind: listeners on window outlive the host element that is removed.
+  const teardown = [];
+  function on(target, type, handler, options) {
+    target.addEventListener(type, handler, options);
+    teardown.push(() => target.removeEventListener(type, handler, options));
+  }
 
   // The panel sits over somebody's work, so it is capped rather than allowed to
   // grow with the click count: the log holds the most recent LOG_LIMIT entries
@@ -57,6 +84,7 @@
   // than an unticked one.
   const GESTURE_EVENTS = ['pointerdown', 'keydown'];
   let audioCtx = null, keepAliveOn = false, awaitingGesture = false;
+  let disarmGesture = () => {};
 
   function startKeepAlive() {
     if (keepAliveOn) return;
@@ -88,14 +116,19 @@
     if (awaitingGesture) return;
     awaitingGesture = true;
     const onGesture = () => {
-      GESTURE_EVENTS.forEach(e => window.removeEventListener(e, onGesture, true));
-      awaitingGesture = false;
+      disarmGesture();
       if (keepAliveOn) settleKeepAlive();
     };
     GESTURE_EVENTS.forEach(e => window.addEventListener(e, onGesture, true));
+    disarmGesture = () => {
+      GESTURE_EVENTS.forEach(e => window.removeEventListener(e, onGesture, true));
+      awaitingGesture = false;
+      disarmGesture = () => {};
+    };
   }
 
   function stopKeepAlive() {
+    disarmGesture();
     if (!keepAliveOn) return;
     audioCtx.__osc.stop();
     audioCtx.close();
@@ -107,6 +140,8 @@
   // ---------- Network-error auto-resume ----------
   let autoResumeEnabled = false;
   let recovering = false;
+  let resumeTimer = null;
+  const handledBanners = new WeakSet();
   // What gets typed into the chat and sent once the connection is back. It is a
   // fresh instruction, not a replay: the agent knows what it was doing, so it
   // only needs telling to carry on.
@@ -131,10 +166,17 @@
     return document.querySelector('[role="combobox"][contenteditable="true"]');
   }
 
+  // Reaches for the page's own descriptor to get past React's patched setter,
+  // which is why this script runs in the MAIN world. A page that has replaced the
+  // prototype property with a plain value leaves no setter to call, and throwing
+  // here would surface as an unhandled rejection inside the recovery, so the
+  // failure is reported instead.
   function setTextareaValue(el, text) {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-    setter.call(el, text);
+    const descriptor = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+    if (!descriptor || !descriptor.set) return false;
+    descriptor.set.call(el, text);
     el.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
   }
   function pasteIntoRichInput(el, text) {
     el.focus();
@@ -150,13 +192,25 @@
 
     const textarea = findFallbackTextarea();
     if (textarea) {
-      setTextareaValue(textarea, RESUME_TEXT);
+      if (!setTextareaValue(textarea, RESUME_TEXT)) {
+        console.warn('[Auto FDE] The chat textarea has no value setter to call.');
+        return false;
+      }
     } else {
       const rich = findRichInput();
       if (!rich) { console.warn('[Auto FDE] Could not locate any chat input.'); return false; }
       pasteIntoRichInput(rich, RESUME_TEXT);
     }
-    setTimeout(() => { sendBtn.click(); recordResume(); }, 300);
+    // The editor needs a turn to take the text before the button will send it.
+    // This is the one deferred action in the script, and it is not the prompt
+    // click: a resume that lands late in a throttled tab still resumes, whereas
+    // a prompt click that lands late is a session left sitting unanswered.
+    resumeTimer = setTimeout(() => {
+      resumeTimer = null;
+      if (!sendBtn.isConnected) { reportResume('could not send the resume message', true); return; }
+      sendBtn.click();
+      recordResume();
+    }, 300);
     return true;
   }
 
@@ -177,8 +231,12 @@
     }
     return false;
   }
-  async function handleErrorBanner() {
+  async function handleErrorBanner(banner) {
     if (recovering || !autoResumeEnabled) return;
+    // One recovery per banner. Foundry's callout does not always clear itself
+    // once the connection is back, and without this the next mutation would find
+    // the same banner still on screen and tell the agent to carry on again.
+    handledBanners.add(banner);
     recovering = true;
     reportResume('recovering');
     const stable = await waitForStableConnection();
@@ -417,6 +475,17 @@
     if (!autoResumeEnabled) recovering = false;
   };
 
+  // The panel remembers where it was put and whether it was collapsed. Both go
+  // through these, because localStorage throws outright rather than returning
+  // null when the page's storage is blocked, and losing the panel's position is
+  // not worth an exception in somebody else's application.
+  function remember(key, value) {
+    try { localStorage.setItem(key, value); } catch {}
+  }
+  function recall(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+
   // ---------- Collapse ----------
   // Collapsed keeps the header, which carries the count and the active state, so
   // the panel is still worth glancing at when it is out of the way.
@@ -425,16 +494,10 @@
     else panel.removeAttribute('data-collapsed');
     collapseBtn.setAttribute('aria-label', collapsed ? 'Expand' : 'Collapse');
     collapseBtn.title = collapsed ? 'Expand' : 'Collapse';
-    try {
-      localStorage.setItem('__autoFdeCollapsed', collapsed ? '1' : '0');
-    } catch {}
+    remember('__autoFdeCollapsed', collapsed ? '1' : '0');
   }
   collapseBtn.onclick = () => setCollapsed(!panel.hasAttribute('data-collapsed'));
-  // Dragging is on the header, and the chevron sits inside it.
-  collapseBtn.addEventListener('mousedown', e => e.stopPropagation());
-  try {
-    setCollapsed(localStorage.getItem('__autoFdeCollapsed') === '1');
-  } catch {}
+  setCollapsed(recall('__autoFdeCollapsed') === '1');
 
   // Log lines quote text taken off the page's own buttons, so they are written as
   // text nodes rather than innerHTML. A button labelled with angle brackets would
@@ -481,8 +544,9 @@
         if (clicked.has(btn) || btn.disabled) return;
         const text = (btn.innerText || btn.getAttribute('aria-label') || '').trim().toLowerCase();
         if (!text || !TARGET_LABELS.includes(text)) return;
-        if (BLOCK_SUBSTRINGS.some(b => text.includes(b))) return;
-        const cat = categoryFor(btn);
+        const context = promptContextFor(btn);
+        if (BLOCKED_CONTEXT.some(word => context.includes(word))) return;
+        const cat = categoryFor(context);
         if (!cat.enabled) return;
 
         // The click is not deferred, and must not be. Chrome throttles timers in
@@ -499,7 +563,10 @@
         record(label, cat.id);
       });
     }
-    if (autoResumeEnabled && !recovering && findErrorBanner()) handleErrorBanner();
+    if (autoResumeEnabled && !recovering) {
+      const banner = findErrorBanner();
+      if (banner && !handledBanners.has(banner)) handleErrorBanner(banner);
+    }
   }
 
   const observer = new MutationObserver(() => scan());
@@ -523,8 +590,11 @@
   stopBtn.onclick = () => {
     observer.disconnect();
     clearInterval(backstop);
+    clearTimeout(resumeTimer);
     stopKeepAlive();
     recovering = false;
+    teardown.forEach(undo => undo());
+    teardown.length = 0;
     host.remove();
     delete window.__autoFde;
     console.log('[Auto FDE] Stopped. Press the toolbar button to start again.');
@@ -532,41 +602,43 @@
 
   // ---------- Draggable panel ----------
   // The host element is what carries the position, so that is what moves.
+  function placeAt(left, top) {
+    host.style.right = 'auto';
+    host.style.bottom = 'auto';
+    // A position saved on a wide screen is off the edge of a narrow one, and a
+    // panel nobody can reach cannot be stopped, so every placement is clamped
+    // rather than only the ones made by dragging.
+    host.style.left = Math.max(0, Math.min(left, window.innerWidth - host.offsetWidth)) + 'px';
+    host.style.top = Math.max(0, Math.min(top, window.innerHeight - host.offsetHeight)) + 'px';
+  }
+
   try {
-    const saved = JSON.parse(localStorage.getItem('__autoFdePos') || 'null');
-    if (saved) {
-      host.style.left = saved.left + 'px';
-      host.style.top = saved.top + 'px';
-      host.style.right = 'auto';
-      host.style.bottom = 'auto';
+    const saved = JSON.parse(recall('__autoFdePos') || 'null');
+    if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+      placeAt(saved.left, saved.top);
     }
   } catch {}
 
   let dragging = false, dragOffsetX = 0, dragOffsetY = 0;
-  header.addEventListener('mousedown', e => {
+  on(header, 'mousedown', e => {
+    // The header is the drag handle and the transport controls sit inside it, so
+    // a press on one of those is a press, not the start of a drag.
+    if (e.button !== 0 || e.target.closest('.ctl')) return;
     dragging = true;
     const rect = host.getBoundingClientRect();
     dragOffsetX = e.clientX - rect.left;
     dragOffsetY = e.clientY - rect.top;
-    host.style.right = 'auto';
-    host.style.bottom = 'auto';
-    host.style.left = rect.left + 'px';
-    host.style.top = rect.top + 'px';
+    placeAt(rect.left, rect.top);
     e.preventDefault();
   });
-  window.addEventListener('mousemove', e => {
+  on(window, 'mousemove', e => {
     if (!dragging) return;
-    let left = e.clientX - dragOffsetX;
-    let top = e.clientY - dragOffsetY;
-    left = Math.max(0, Math.min(left, window.innerWidth - host.offsetWidth));
-    top = Math.max(0, Math.min(top, window.innerHeight - host.offsetHeight));
-    host.style.left = left + 'px';
-    host.style.top = top + 'px';
+    placeAt(e.clientX - dragOffsetX, e.clientY - dragOffsetY);
   });
-  window.addEventListener('mouseup', () => {
+  on(window, 'mouseup', () => {
     if (!dragging) return;
     dragging = false;
-    localStorage.setItem('__autoFdePos', JSON.stringify({
+    remember('__autoFdePos', JSON.stringify({
       left: parseFloat(host.style.left),
       top: parseFloat(host.style.top),
     }));

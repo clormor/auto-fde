@@ -12,18 +12,19 @@ is appropriate for the work in front of you. The prompts exist so a person sees
 what the agent is about to do. Anyone running this is choosing to answer a class
 of those prompts in advance.
 
-The script clicks `Allow` and `Allow once`. It skips anything labelled with
-`always`, `all future`, `forever`, `delete`, `force`, `production` or `deny`,
-and the deploy/build category is off until you turn it on. Practical
-consequences worth stating out loud:
+The script clicks a button labelled exactly `Allow` or `Allow once`, so
+`Always allow`, `Allow all future` and `Deny` are never candidates. It then
+skips the prompt outright if the prompt's own text mentions `delete`, `force` or
+`production`, and the deploy/build category is off until you turn it on.
+Practical consequences worth stating out loud:
 
-- Categories are matched on the prompt's visible text with a handful of regexes.
-  A prompt whose wording does not mention read, write, edit, update, create,
-  deploy, build, publish or run falls into `Unclassified`, which is enabled. The
-  default is to allow anything the script cannot classify.
-- The block list is a text match on the button label, not on what the action
-  does. A destructive action behind a button labelled plainly `Allow` gets
-  clicked.
+- Categories are matched on the prompt's visible text with a handful of regexes,
+  riskiest category first. A prompt whose wording does not mention read, write,
+  edit, update, create, deploy, build, publish or run falls into `Unclassified`,
+  which is enabled. The default is to allow anything the script cannot classify.
+- The block list is three words in a substring match on the prompt, not a
+  reading of what the action does. A destructive action whose prompt does not
+  happen to use one of them gets clicked.
 - Leave it running on a long unattended session and you will not know what was
   approved beyond the last ten lines in the panel and whatever is in the
   console.
@@ -60,7 +61,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  44 assertions: the in-page script and the packaged
+npm run test:browser  54 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -168,6 +169,35 @@ delay: there is no unthrottled way to wait, since `requestAnimationFrame` is
 paused in hidden tabs too. The 2000ms `setInterval` catches a prompt that
 arrives without a mutation the observer sees; being a timer is exactly why it is
 the backstop and not the mechanism.
+
+**Categories are matched riskiest first, which is not the order they are shown
+in.** A prompt reading "deploy the build, view the plan first" matches both read
+and deploy, and taking the first match in display order classed it as read,
+which let a deploy through with the deploy category switched off. Each category
+carries a `risk` and `BY_RISK` sorts on it; `other` matches everything and has
+the lowest risk, so it stays the fallback.
+
+**The block list reads the prompt, not the button.** `TARGET_LABELS` is an exact
+match on `allow` or `allow once`, so a list of blocked labels can never match
+anything that exact match has not already excluded, and `delete`, `force` and
+`production` are not button labels in the first place. They are matched against
+the prompt's text, which is where the risk is. `always` and `forever` stay out
+of that list: a prompt offering `Allow` beside `Always allow` carries the second
+label in its own text, and blocking on it would refuse the ordinary case.
+
+**One recovery per error banner.** Foundry's callout does not reliably clear
+itself once the connection is back, so a banner still on screen after the resume
+has been sent gets found by the next mutation, and the agent is told to carry on
+again, and again. `handledBanners` is a `WeakSet` of the elements already acted
+on. The 300ms wait before the send button is pressed is the one deferred action
+in the script, and it is not the prompt click: a resume that lands late in a
+throttled tab still resumes.
+
+**Stop has to undo everything, because start can follow it.** The panel is
+removed and `window.__autoFde` deleted, but the drag listeners live on `window`
+and would outlive it, so every listener registered outside the host element goes
+through `on()`, which records how to remove it. A browser test asserts nothing
+is left on `window` after Stop.
 
 The keep-alive checkbox is the other half of this. Silent audio marks the tab as
 audible, which exempts the whole page from Chrome's intensive throttling, so
@@ -289,6 +319,17 @@ Kept because each one is a trap that is easy to reintroduce.
   another kind of prompt, no way to get it out of the way, and no mark on it. It
   is now a shadow-root panel in the system font, sectioned by what each control
   decides, collapsible, and headed by the mark.
+- **The block list matched nothing.** It was checked against the button label,
+  which by that point had already been narrowed to exactly `allow` or
+  `allow once`, so no entry in it could ever match. `delete`, `force` and
+  `production` are matched against the prompt's text now.
+- **A read-only word anywhere in a deploy prompt let the deploy through.**
+  Categories were matched in display order and read comes first, so the deploy
+  category being off decided nothing. They are matched in risk order now.
+- **A banner that did not clear itself resumed the agent over and over.** Every
+  mutation while it was on screen started another recovery.
+- **Stop left its drag listeners on `window`.** Each start and stop on the same
+  page added another pair.
 - **The log grew with the click count.** It is capped at ten rows, the panel has
   a `max-height` of the viewport, and log lines are written as text nodes rather
   than `innerHTML`, so a button label containing angle brackets cannot write

@@ -32,8 +32,18 @@ const PAGE = `<!doctype html><html><body style="font-family:sans-serif">
 </div>
 
 <div role="dialog" id="d2">
-  <p>Agent wants to deploy the build to production.</p>
+  <p>Agent wants to deploy the build to the staging stack.</p>
   <button id="allow2">Allow</button>
+</div>
+
+<div role="dialog" id="d4">
+  <p>Agent wants to delete the production dataset.</p>
+  <button id="allow5">Allow</button>
+</div>
+
+<div role="dialog" id="d5">
+  <p>Agent wants to deploy the pipeline build, view the plan first.</p>
+  <button id="allow6">Allow</button>
 </div>
 
 <div role="dialog" id="d3">
@@ -41,6 +51,9 @@ const PAGE = `<!doctype html><html><body style="font-family:sans-serif">
   <button id="allow4" disabled>Allow</button>
   <button id="allow3">Allow</button>
 </div>
+
+<div role="combobox" contenteditable="true" id="chat"></div>
+<button id="send" aria-label="Send message"></button>
 
 <script>
   window.__hits = [];
@@ -84,9 +97,21 @@ async function mockPage(browser, url, config = { origins: [ORIGIN], pathMarker: 
   const page = await browser.newPage();
   await page.route('**/*', route =>
     route.fulfill({ status: 200, contentType: 'text/html', body: PAGE }));
-  // Every AudioContext the keep-alive creates gets recorded, so unticking the box
-  // can be checked for a leak. Nothing in the extension is involved in observing.
+  // Two things are watched from outside the extension. Every AudioContext the
+  // keep-alive opens is recorded, so unticking the box can be checked for a leak.
+  // Every listener the script puts on window is counted in and out, so Stop can
+  // be checked for leaving any behind; the page's own listener is on document, so
+  // it is not counted here.
   await page.addInitScript(() => {
+    window.__winListeners = {};
+    const add = window.addEventListener.bind(window);
+    const remove = window.removeEventListener.bind(window);
+    const tally = (type, by) => {
+      window.__winListeners[type] = (window.__winListeners[type] || 0) + by;
+    };
+    window.addEventListener = (type, fn, opts) => { tally(type, 1); return add(type, fn, opts); };
+    window.removeEventListener = (type, fn, opts) => { tally(type, -1); return remove(type, fn, opts); };
+
     window.__ctxs = [];
     const Real = window.AudioContext;
     window.AudioContext = function (...args) {
@@ -120,6 +145,14 @@ check('clicked the write-category Allow', hits.includes('allow3'));
 check('left "Always allow" alone', !hits.includes('always1'));
 check('left the deploy-category Allow alone (off by default)', !hits.includes('allow2'));
 check('left the disabled button alone', !hits.includes('allow4'));
+// The block list reads the prompt, not the button label. An exact match on
+// "Allow" already rules out "Always allow", so a label-only list matched nothing
+// at all; what it has to catch is what the prompt is asking for.
+check('left a prompt naming a blocked word alone', !hits.includes('allow5'));
+// Categories are matched riskiest first. This prompt matches read and deploy,
+// and read winning would let a deploy through with its category switched off.
+check('judged a read-and-deploy prompt by the riskier of the two',
+  !hits.includes('allow6'));
 
 const count = await text(p1, '#af-count');
 check('counter matches the number of clicks', count === '2', `counter=${count}`);
@@ -212,8 +245,13 @@ check('nothing renders in a monospace font', await p1.evaluate(() => {
 await press(p1, 'input[data-cat="deploy"]');
 await p1.evaluate(() => document.body.appendChild(document.createElement('span'))); // nudge the observer
 await p1.waitForTimeout(1200);
+const afterDeployOn = await p1.evaluate(() => window.__hits);
 check('deploy Allow clicked once its category is enabled',
-  (await p1.evaluate(() => window.__hits)).includes('allow2'));
+  afterDeployOn.includes('allow2'));
+check('the read-and-deploy prompt goes through once deploy is enabled',
+  afterDeployOn.includes('allow6'));
+check('a prompt naming a blocked word stays blocked with every category on',
+  !afterDeployOn.includes('allow5'));
 
 // ---------------------------------------------------------------------------
 // The click must not depend on a timer. Chrome throttles timers in a hidden tab
@@ -281,7 +319,7 @@ check(`log holds at most ${LOG_LIMIT} rows once more than that has been clicked`
 
 const bulkCount = Number(await text(p1, '#af-count'));
 check('the counter keeps the running total the log does not',
-  bulkCount === 17, `counter=${bulkCount}`);
+  bulkCount === 18, `counter=${bulkCount}`);
 
 const fitsViewport = await p1.evaluate(() => {
   const r = document.getElementById('af-host').getBoundingClientRect();
@@ -328,6 +366,60 @@ check('a button label cannot inject markup into the log',
   await p1.evaluate(() => !window.__pwned)
     && !(await has(p1, '#af-log img')));
 
+// ---------------------------------------------------------------------------
+// Auto-resume. The banner is what starts a recovery, and Foundry's callout does
+// not always clear itself once the connection is back, so the banner still being
+// there must not send the agent a second instruction.
+// ---------------------------------------------------------------------------
+// waitForStableConnection() probes the origin twice before it believes the
+// connection is back. No test here reaches a network, so the probe is answered
+// in the page.
+await p1.evaluate(() => { window.fetch = async () => ({ ok: true, status: 200 }); });
+
+const sendsSoFar = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
+await press(p1, '#af-resume-toggle');
+await p1.evaluate(() => {
+  const banner = document.createElement('div');
+  banner.className = 'bp6-callout-intent-danger';
+  banner.textContent = 'Network error: the request could not be completed.';
+  document.body.appendChild(banner);
+});
+// Two successful probes a second apart, then 300ms for the editor.
+await p1.waitForTimeout(4000);
+const sendsAfter = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
+check('a network banner sends one resume message', sendsAfter === sendsSoFar + 1,
+  `sends=${sendsAfter - sendsSoFar}`);
+check('the resume went into the log',
+  (await text(p1, '#af-log')).includes('sent the resume message'));
+
+await p1.evaluate(() => document.body.appendChild(document.createElement('span')));
+await p1.waitForTimeout(3000);
+const sendsLater = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
+check('a banner still on screen does not send a second resume message',
+  sendsLater === sendsAfter, `sends=${sendsLater - sendsAfter}`);
+
+await press(p1, '#af-resume-toggle');
+
+// ---------------------------------------------------------------------------
+// The header is the drag handle and the transport controls sit inside it, so a
+// press on one of those must not drag the panel out from under the pointer.
+// ---------------------------------------------------------------------------
+const beforeDragAttempt = await p1.evaluate(() =>
+  JSON.stringify(document.getElementById('af-host').getBoundingClientRect().toJSON()));
+const togglePoint = await p1.evaluate(() => {
+  const r = document.getElementById('af-host').shadowRoot
+    .querySelector('#af-toggle').getBoundingClientRect();
+  return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+});
+await p1.mouse.move(togglePoint.x, togglePoint.y);
+await p1.mouse.down();
+await p1.mouse.move(togglePoint.x - 80, togglePoint.y - 80, { steps: 4 });
+await p1.mouse.up();
+const afterDragAttempt = await p1.evaluate(() =>
+  JSON.stringify(document.getElementById('af-host').getBoundingClientRect().toJSON()));
+check('dragging from a header control does not move the panel',
+  beforeDragAttempt === afterDragAttempt);
+
 // The glyph says what pressing it does, the colour says what it is doing now, so
 // pausing has to change both.
 const beforePause = await p1.evaluate(() => {
@@ -355,6 +447,12 @@ check('re-injecting does not stack a second panel',
 await press(p1, '#af-stop');
 check('stop removes the panel and the handle',
   await p1.evaluate(() => !document.getElementById('af-host') && !window.__autoFde));
+// Stop can be followed by another press of the toolbar button on the same page,
+// so a listener left on window is a leak that compounds.
+const leftOnWindow = await p1.evaluate(() =>
+  Object.entries(window.__winListeners).filter(([, n]) => n > 0));
+check('stop leaves no listeners behind on window',
+  leftOnWindow.length === 0, JSON.stringify(leftOnWindow));
 
 // ---------------------------------------------------------------------------
 // The script's own guard, which is the second line of defence behind the gate
@@ -374,6 +472,20 @@ const p4 = await mockPage(browser, SESSION_URL, null);
 await p4.evaluate(SCRIPT);
 await p4.waitForTimeout(300);
 check('refuses to run with no configuration on the page at all', await gone(p4));
+
+// A position saved on a wide screen puts the panel off the edge of a narrow one,
+// and a panel nobody can reach cannot be stopped.
+const p5 = await mockPage(browser, SESSION_URL);
+await p5.evaluate(() =>
+  localStorage.setItem('__autoFdePos', JSON.stringify({ left: 99999, top: 99999 })));
+await p5.evaluate(SCRIPT);
+await p5.waitForTimeout(300);
+check('a position saved off the edge of the screen is clamped back into view',
+  await p5.evaluate(() => {
+    const r = document.getElementById('af-host').getBoundingClientRect();
+    return r.left >= 0 && r.top >= 0
+      && r.right <= window.innerWidth + 1 && r.bottom <= window.innerHeight + 1;
+  }));
 
 await browser.close();
 

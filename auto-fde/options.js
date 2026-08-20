@@ -77,7 +77,16 @@ form.addEventListener("submit", async event => {
     return;
   }
 
-  await writeOrigins([...origins, origin]);
+  // The permission is already granted at this point, so a failed write leaves
+  // host access the extension cannot use. Saying so is the only useful thing to
+  // do about it: retrying will not fix a storage area that is refusing writes.
+  try {
+    await writeOrigins([...origins, origin]);
+  } catch (err) {
+    say("Chrome could not save " + origin + ": " + err.message, true);
+    return;
+  }
+
   input.value = "";
   say("Added " + origin + ". Reload any AI FDE tab already open on it.");
   render();
@@ -85,7 +94,12 @@ form.addEventListener("submit", async event => {
 
 async function removeOrigin(origin) {
   const origins = await readOrigins();
-  await writeOrigins(origins.filter(o => o !== origin));
+  try {
+    await writeOrigins(origins.filter(o => o !== origin));
+  } catch (err) {
+    say("Chrome could not remove " + origin + ": " + err.message, true);
+    return;
+  }
 
   // Handing the host permission back is the point of removing the entry. A
   // refusal is not worth failing over: the origin is gone from the list either
