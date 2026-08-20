@@ -526,6 +526,62 @@ check('a banner still on screen does not send a second resume message',
   sendsLater === sendsAfter, `sends=${sendsLater - sendsAfter}`);
 
 // ---------------------------------------------------------------------------
+// The state probe. An approval is a state transition inside the page, so the
+// function the button calls is reachable from here whether or not the button is.
+// This walks up React's fiber tree from whatever anchor exists and reports
+// component names, function props by name, and other props by shape. Shapes
+// only: props on a thread component hold the conversation.
+// ---------------------------------------------------------------------------
+const probed = [];
+const collectProbe = msg => probed.push(msg.text());
+p1.on('console', collectProbe);
+await p1.evaluate(() => {
+  const row = document.createElement('div');
+  row.setAttribute('role', 'dialog');
+  row.innerHTML = '<p>Agent wants to read the probed record.</p>';
+  const b = document.createElement('button');
+  b.id = 'probed';
+  b.textContent = 'Allow';
+  // Disabled, so the scan counts it as a prompt it can see and leaves it alone
+  // rather than clicking the anchor out from under the probe.
+  b.disabled = true;
+  row.appendChild(b);
+  document.body.appendChild(row);
+
+  // React's own shape, as far as the probe is concerned: a fiber on the element
+  // and a return chain above it. The conversation is in there to be left out.
+  const store = {
+    type: { displayName: 'ThreadStateProvider' },
+    memoizedProps: {
+      approveToolCall: () => {},
+      pendingToolCall: { id: 'tc-1', state: 'pending_approval' },
+      transcript: ['every message in the session'],
+      unrelated: 'ignored',
+    },
+    return: null,
+  };
+  b[`__reactFiber$${Math.random().toString(36).slice(2)}`] = {
+    type: { name: 'ToolApprovalRow' },
+    memoizedProps: { onApprove: () => {}, itemId: 'item-1' },
+    return: store,
+  };
+});
+await p1.waitForTimeout(300);
+await p1.evaluate(() => window.__autoFde.probeApproval());
+await p1.waitForTimeout(200);
+p1.off('console', collectProbe);
+
+const probe = probed.find(t => t.startsWith('[Auto FDE] probe:'));
+check('the probe walks up from the button and names the handlers it finds',
+  !!probe && probe.includes('ToolApprovalRow') && probe.includes('fns: onApprove')
+    && probe.includes('ThreadStateProvider') && probe.includes('fns: approveToolCall'),
+  JSON.stringify(probe || null));
+check('the probe reports shapes, so a transcript prop cannot leak the session',
+  !!probe && probe.includes('pendingToolCall={id, state}')
+    && !probe.includes('every message in the session'),
+  JSON.stringify(probe || null));
+
+// ---------------------------------------------------------------------------
 // The traffic watch. It is reached from the console rather than the panel,
 // because it is a step in working out whether an approval can be sent instead of
 // clicked, not a decision anyone makes while using this. It must log the request

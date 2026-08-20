@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  77 assertions: the in-page script and the packaged
+npm run test:browser  79 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -331,11 +331,36 @@ agentStateModification.sessionState.bulkApprovalSettings =
 ```
 
 `askUser` against `autoApprove`, per tool, plus bulk categories that are the ones
-this extension approximates with regexes on prompt text. Setting those removes
-the prompt instead of answering it, which needs no button, no rendered row and no
-visible tab. It is issue #5, and it is a better tool than this one for the job
-this one was built for. `POLICY_FIELD` in the traffic watch prints that object at
-a longer limit than everything else for exactly that reason.
+this extension approximates with regexes on prompt text. It is recorded as issue
+#5 and it is not the answer: the settings do not cover every tool and do not
+reliably hold, which is the reason this tool exists. `POLICY_FIELD` in the
+traffic watch prints that object at a longer limit than everything else because
+it is worth reading, not because it is the plan.
+
+**The state is the route, and this script is already in it.** That an approval is
+a transition inside the page is what makes the third route possible rather than
+closing the last one. `world: "MAIN"` puts this script in the page's own context,
+so the function the button calls is reachable whether or not the button is. And
+the state is mounted in a hidden tab: the pending pill renders from it, which is
+the only reason the pill can be found there at all. What is missing is not access
+but a map.
+
+`window.__autoFde.probeApproval()` draws it. It walks up React's fiber tree from
+an anchor, preferring an Allow button that carries a fiber, falling back to the
+pill, and reports each component's name, its function props by name, and its
+other props by shape. An anchor with no fiber on it loses to one that has it,
+because the first Allow in the document is not necessarily the mounted one.
+
+Shapes, never contents. Props on a thread component are as likely to be the whole
+conversation as a flag, `JSON.stringify` on a fiber prop finds a cycle sooner or
+later, and this output gets pasted into chat windows. A test asserts a
+`transcript` prop is reported as `array[1]` and that its contents do not appear.
+
+The two anchors answer different halves. From a mounted Allow button the walk
+reaches the handler the click runs and the props it closes over. From the pill it
+reaches whatever is still mounted in a hidden tab, which is the set actually
+available when it matters. Comparing them is the point: the approval has to be
+driven from something in the second set.
 
 It is reached from the console rather than the panel because it is not a decision
 anyone makes while using this. Detection is already solved for the API route, as

@@ -524,6 +524,108 @@
     return 'on';
   }
 
+  // ---------- State probe ----------
+  // Reached from the console as window.__autoFde.probeApproval(), and the second
+  // capture step. The first one established that an approval is a state
+  // transition inside the page rather than a request to a server: the client
+  // holds the thread, writes `toolResponse.state: "pending_approval"` into it,
+  // and carries on when the button is pressed. There is nothing on the far end to
+  // tell.
+  //
+  // That is what makes a third route possible. This script runs in the page's own
+  // world, so the state the button changes is reachable from here whether or not
+  // the button is. And the state is mounted even in a hidden tab, because the
+  // pending pill renders from it, which is how the pill can be found at all.
+  //
+  // So the target is the function the button calls, and the object holding the
+  // pending call. This walks React's fiber tree up from whichever anchor exists,
+  // preferring an Allow button while there is one and falling back to the pill,
+  // and reports each component's name, its function props by name, and its other
+  // props by shape. Names and shapes only: props on a thread component hold the
+  // conversation, and this output gets pasted into chat windows.
+  const REACT_FIBER = /^__reactFiber\$|^__reactInternalInstance\$/;
+  const PROBE_INTERESTING = /approv|pending|tool|item|thread|decision|allow|state/i;
+  const PROBE_LEVELS = 40;
+  const PROBE_KEYS = 12;
+  const PROBE_STRING_LIMIT = 120;
+
+  function fiberFor(el) {
+    const key = Object.keys(el).find(name => REACT_FIBER.test(name));
+    return key ? el[key] : null;
+  }
+
+  function fiberName(fiber) {
+    const type = fiber.type || fiber.elementType;
+    if (!type) return '(host)';
+    if (typeof type === 'string') return type;
+    return type.displayName || type.name || '(anonymous)';
+  }
+
+  // Shapes, not contents. A prop on one of these components is as likely to be
+  // the whole conversation as it is to be a flag, and JSON.stringify on a fiber
+  // prop finds a cycle sooner or later anyway.
+  function describeValue(value) {
+    if (typeof value === 'function') return 'fn';
+    if (value === null) return 'null';
+    if (Array.isArray(value)) return `array[${value.length}]`;
+    if (typeof value === 'object') {
+      const keys = Object.keys(value);
+      return `{${keys.slice(0, PROBE_KEYS).join(', ')}${keys.length > PROBE_KEYS ? ', …' : ''}}`;
+    }
+    if (typeof value === 'string') return JSON.stringify(shorten(value, PROBE_STRING_LIMIT));
+    return String(value);
+  }
+
+  // An anchor with no fiber on it is no use, so one that has a fiber wins over
+  // one that merely comes first in the document. Falling back to an anchor
+  // without one is still better than saying nothing was pending, because then
+  // the report says which of the two things went wrong.
+  function probeAnchor() {
+    const buttons = Array.from(document.querySelectorAll('button'))
+      .filter(b => TARGET_LABELS.includes(labelFor(b).toLowerCase()));
+    const wired = buttons.find(fiberFor);
+    if (wired) return { what: 'an Allow button', el: wired };
+    const marker = findPendingMarker();
+    if (marker && fiberFor(marker)) return { what: 'the pending pill', el: marker };
+    if (buttons.length) return { what: 'an Allow button', el: buttons[0] };
+    if (marker) return { what: 'the pending pill', el: marker };
+    return null;
+  }
+
+  function probeApproval() {
+    const anchor = probeAnchor();
+    if (!anchor) {
+      console.warn('[Auto FDE] probe: nothing to start from. Run it while a prompt is pending.');
+      return 'nothing pending';
+    }
+    let fiber = fiberFor(anchor.el);
+    if (!fiber) {
+      console.warn('[Auto FDE] probe: no React fiber on ' + anchor.what
+        + '. The page may not be React, or the key has changed.');
+      return 'no fiber';
+    }
+
+    const lines = [`[Auto FDE] probe: walking up from ${anchor.what}`];
+    for (let level = 0; fiber && level < PROBE_LEVELS; level++, fiber = fiber.return) {
+      const props = fiber.memoizedProps;
+      if (!props || typeof props !== 'object') {
+        lines.push(`  ${level} ${fiberName(fiber)}`);
+        continue;
+      }
+      const keys = Object.keys(props);
+      const handlers = keys.filter(key => typeof props[key] === 'function');
+      const interesting = keys.filter(key =>
+        typeof props[key] !== 'function' && PROBE_INTERESTING.test(key));
+      lines.push(`  ${level} ${fiberName(fiber)}`
+        + (handlers.length ? `\n      fns: ${handlers.join(', ')}` : '')
+        + (interesting.length
+          ? `\n      props: ${interesting.map(k => `${k}=${describeValue(props[k])}`).join(', ')}`
+          : ''));
+    }
+    console.log(lines.join('\n'));
+    return 'probed';
+  }
+
   // ---------- UI panel ----------
   // The panel lives in a shadow root. It is injected into somebody else's
   // application, so isolation cuts both ways: Foundry ships Blueprint, which
@@ -1098,6 +1200,7 @@
     show: () => { host.style.display = 'block'; },
     stop: () => stopBtn.click(),
     watchTraffic,
+    probeApproval,
   };
   console.log('[Auto FDE] Running on', location.href);
 })();
