@@ -50,19 +50,19 @@ chevron. Paused shows an amber play icon, running shows a green pause icon.
 
 Three settings sit below the categories:
 
-- **Keep the tab awake**, on by default, since a tab left in the background is
-  the usual reason to run this. Inaudible audio stops Chrome throttling the tab.
-  Chrome will not let a page start audio until somebody touches it, so click
-  anywhere in the tab once.
+- **Keep the tab awake**, on by default. Inaudible audio marks the tab as
+  audible, which stops Chrome throttling its timers and stops the tab being
+  frozen or discarded on a long session. Chrome will not let a page start audio
+  until somebody touches it, so click anywhere in the tab once.
 - **Automatically resume after a network error**, on by default, since a
   dropped connection is what actually ends an unattended session. Once the
   connection has been back for a couple of seconds it types one line into the
   chat telling the agent to carry on, and sends it. Every send is in the panel's
   log. Untick it if you would rather nothing was said on your behalf.
 - **Tell the page the tab is visible**, on by default. Foundry is told the tab is
-  in front even when it is not, so it does not stand its own work down while you
-  are elsewhere. Untick it if anything about the session behaves oddly in the
-  background.
+  in front even when it is not, so it does not defer its own work while you are
+  elsewhere. It does not make a background tab work, for the reason in the next
+  section. Untick it if anything about the session behaves oddly.
 
 If a prompt arrives while you are scrolled up the transcript, the panel scrolls
 you to the bottom to reach it. Foundry only keeps the part of a long session you
@@ -70,19 +70,29 @@ are looking at on the page, so there is no other way to press a button that is
 not there. If it cannot get to one it keeps trying, more slowly, and says so in
 the log.
 
-One thing is worth knowing about long sessions in a background tab. Chrome stops
-drawing a tab you are not looking at, and a prompt can arrive with nothing on the
-page to press, because Foundry has not added the message to a page nobody is
-looking at. The third setting above is there to push back on that, and the panel
-acts the instant you come back to the tab either way. If you want the best odds,
-give the session its own window and leave any sliver of it uncovered: Chrome
-keeps drawing a window you can see, even when you are working in something else,
-which it does not do for a background tab. Clicking once in the tab after you
-open the panel is worth doing regardless, since that is what lets the keep-alive
-start, and the log says so if it has not.
-
 **Stop** shuts it down, and so does reloading the page. Press the toolbar button
 again to start it back up.
+
+## Keep the session in front of you
+
+**A background tab does not work, and cannot be made to.** Chrome stops drawing a
+tab you are not looking at, and Foundry does not add the message to a page it is
+not drawing, so the prompt arrives with no button on the page for anything to
+press. That has been measured rather than guessed: in a background tab there are
+dozens of buttons in the page and not one of them is an approval. No extension
+can reach a button that is not there. The panel keeps checking, and it presses the
+prompt within a second of your coming back to the tab, but while you are away
+nothing happens.
+
+What does work is keeping the session in its own window and leaving any sliver of
+it uncovered, then working in another app. Chrome keeps drawing a window you can
+see even when it is not the one you are typing in, so the session keeps running
+and prompts get pressed while you are elsewhere. A window fully hidden behind
+another window counts as not visible, so leave an edge of it showing.
+
+Clicking once in the tab after you open the panel is worth doing whatever you
+choose, since that is what lets the keep-alive start. The log says so if it has
+not.
 
 ## If nothing happens
 
@@ -100,10 +110,10 @@ DevTools console, and neither does anything this extension logs: that goes to
 the **service worker** console, reached by the link of that name on the same
 card.
 
-**A prompt sitting unanswered.** The panel goes and gets prompts that are off
-screen, so this should be rare while you are in the tab. When it cannot, the log
-reads `off-screen prompt still out of reach`, and switching to the tab will
-settle it. A prompt that stays put once it is in front of you is a different
+**A prompt sitting unanswered.** If the tab is in the background, see the section
+above: that is expected and switching to the tab settles it within a second. In
+the tab, the panel goes and gets prompts that are off screen, so it should be
+rare; when it cannot, the log reads `off-screen prompt still out of reach`. A prompt that stays put once it is in front of you is a different
 thing: that one is being refused, either because its category is unticked or
 because the prompt mentions deleting, forcing or production.
 

@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             69 assertions
+npm run test:browser                             83 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -71,6 +71,33 @@ and no `dist/`.
   sitting on an approval mutates nothing, so the observer never fires and the
   backstop timer is throttled to once a minute. The `visibilitychange` listener
   scans immediately and resets the jump budget. Do not remove it.
+- **A hidden tab cannot be made to work, and this is settled.** Measured with
+  the spoof on, from a background tab: `visibility=hidden buttons=77
+  allow=[none] allowByText=0`. Foundry does not mount the row while Chrome is
+  not drawing the tab, and no button in the document means nothing to press. The
+  answer is a visible window, which the README says, or Foundry's own API, which
+  is a different tool. Do not spend another round on the DOM.
+- **A console paste and an injection are the same thing.** Identical source, same
+  world. If background behaviour differs between them the reason is elsewhere,
+  usually session length: a short transcript is not windowed, so a row is in the
+  document as soon as React commits it, and a commit needs no frame. Do not add a
+  clipboard mode to chase this.
+- **`watchTraffic()` logs no headers.** It is the capture step for sending an
+  approval rather than clicking one, reached from the console as
+  `window.__autoFde.watchTraffic()`, and its output gets pasted into chat
+  windows. Headers never. Stop unwraps `fetch`, `XMLHttpRequest` and
+  `WebSocket.prototype.send`.
+- **`probeApproval()` reports shapes, never contents.** It walks React fibers
+  from an Allow button or the pending pill and names components and function
+  props. Props on a thread component hold the conversation, fiber props are
+  cyclic, and the output gets pasted into chat windows. Do not start printing
+  prop values.
+- **It reports fields, not bodies, and the click window opens before the
+  click.** A thread body buries the field that matters past any truncation, so
+  the body is walked and only matching paths are printed. The page sends the
+  grant synchronously from its own click handler, so `markApprovalClick()` runs
+  immediately before `btn.click()`; moving it into `record()` puts it after the
+  click and misses the request.
 - **The visibility spoof answers the page, not the browser.** `document.hidden`
   and `document.visibilityState` report visible and the going-hidden event is
   stopped at the window in the capture phase, so the page does not stand down of

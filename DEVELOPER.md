@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  69 assertions: the in-page script and the packaged
+npm run test:browser  83 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -235,8 +235,177 @@ which fits a list that mounts rows off a `ResizeObserver` or an
 `IntersectionObserver`: those callbacks are delivered with the frame, and there
 is no frame.
 
-**The visibility spoof is what is left, and it answers the page rather than the
-browser.** `document.hidden` and `document.visibilityState` are given own
+**Measured, with the spoof on: a hidden tab cannot be made to work.** The stall
+report from a background tab running the spoof reads
+`visibility=hidden buttons=77 allow=[none] allowByText=0`. Seventy-seven buttons
+in the document, none of them an approval, and the transcript rows not among
+them. Telling the page it is visible did not change that, so what stops the row
+being mounted is Chrome not drawing the tab rather than Foundry deciding to stand
+down. Nothing an extension can reach from inside the page fixes that, and the
+options that would are outside it: keep the tab active in a window that is at
+least partly visible, which works and is what the README recommends, or answer
+the approval through Foundry's own API rather than its DOM, which is a different
+tool from this one. Do not spend another round on the DOM.
+
+`allowByText` in the report is what makes that reading safe. It counts buttons
+whose `textContent` matches, which needs no rendering at all, so a row that is
+present but unmatched cannot be mistaken for a row that is absent. `labelFor()`
+falls back to `textContent` for the same reason, and a test covers a button whose
+label is inside a `display:none` child, where `innerText` is empty and the button
+is real.
+
+**Pasting the script into the console is not different from injecting it.** This
+comes up because the tool started life as a console paste and seemed to work in
+the background then. Delivery cannot be the reason. Both routes run the identical
+source in the page's own world, and the thing that fails is a property of the
+page: there is no button in the document. What actually changed is session
+length. A short transcript is not windowed, so a new row is in the document as
+soon as React commits it, and a commit needs no frame. Long transcripts are
+windowed, and mounting a row in one needs a measurement that needs a frame. So it
+did work, and it stopped working as sessions got longer, not as the delivery
+changed.
+
+The one real difference with DevTools open is that Chrome exempts the page from
+freezing and discarding, which matters for timers rather than for mounting. If
+that is ever in doubt, the way to test it is to leave DevTools open on the tab and
+background it with the extension unchanged: same code, one variable. There is no
+point building a clipboard-paste mode to answer it.
+
+**`window.__autoFde.watchTraffic()`** is the first step of the other route, and
+the only one that needs a real session. It wraps `fetch`, `XMLHttpRequest` and
+`WebSocket.prototype.send`. It logs no headers, deliberately: that is where the
+session token is, and these lines get copied into chat windows. Stop unwraps all
+four, and a test asserts both the log line and the absence of the header.
+
+Three things it learned the hard way, all from one capture against a real
+session:
+
+- **Printing the body is useless.** A Foundry thread body is hundreds of item
+  ids and a tool configuration block, and the field that matters is past any
+  reasonable truncation. So the body is parsed and walked, and only the paths
+  whose key or string value carries the word are reported. A wall of thread
+  document becomes two or three lines.
+- **The word is not enough on its own.** `QuickApprovalProjectQuery`, a
+  repository pull request query with nothing to do with a session, was the
+  loudest thing in the log. Outside the window below, a request has to be on
+  `/ai-fde/api/` as well as carry the word. `watchTraffic({ all: true })` drops
+  both bars for when the grant is named after nothing at all.
+- **The window has to open before the click, not after.** The page sends the
+  grant synchronously from its own click handler, so a window opened in
+  `record()`, which runs after `btn.click()`, has already missed the request it
+  exists to catch. `markApprovalClick()` is called immediately before the click
+  instead, and the marker line in the log is what tells the grant apart from
+  everything else the session was doing at the time.
+
+What the captures showed. The grant is the `POST
+/ai-fde/api/threads/{id}/update` that follows the click, carrying
+`currentVersion` and `itemIdsInOrder`, and it reported `fields: none`: nothing in
+it is named after approval. So searching for the word cannot find the grant, and
+the body has to be read. Read whole it is unreadable, because it leads with
+hundreds of item ids, which is why `describeBody()` reports every top-level key
+with an array of nothing but strings summarised as a count and everything else
+in full.
+
+The shape that makes it a document update with optimistic concurrency is the
+thing to weigh before building on it. Sending one means holding a version the
+server still accepts and an item list that is correct, and getting either wrong
+writes junk into a live session.
+
+**There is no approval to send.** The third capture settles it. What follows a
+click is the client persisting the thread it already owns: `itemsToWrite` full of
+assistant messages, tool usages, and OpenAI reasoning items carrying
+`encryptedContent`. A client holding encrypted reasoning state and writing the
+whole document is a client running the agent loop itself, and an approval in that
+architecture is a state transition inside the page, not a request to a server. So
+posting an `/update` from outside would write to the transcript without approving
+anything, because nothing on the far end is waiting to be told.
+
+The same capture shows the lever that does exist:
+
+```
+agentStateModification.sessionState.toolApprovalSettingsOverrides =
+  {"load_skill":{"type":"default","rules":[],"default":{"type":"askUser"}}, ...}
+agentStateModification.sessionState.bulkApprovalSettings =
+  {"create":null,"edit":null,"import":null,"deploy":null,"tag":null,
+   "agentSelf":{"type":"default","rules":[],"default":{"type":"autoApprove"}}}
+```
+
+`askUser` against `autoApprove`, per tool, plus bulk categories that are the ones
+this extension approximates with regexes on prompt text. It is recorded as issue
+#5 and it is not the answer: the settings do not cover every tool and do not
+reliably hold, which is the reason this tool exists. `POLICY_FIELD` in the
+traffic watch prints that object at a longer limit than everything else because
+it is worth reading, not because it is the plan.
+
+**The state is the route, and this script is already in it.** That an approval is
+a transition inside the page is what makes the third route possible rather than
+closing the last one. `world: "MAIN"` puts this script in the page's own context,
+so the function the button calls is reachable whether or not the button is. And
+the state is mounted in a hidden tab: the pending pill renders from it, which is
+the only reason the pill can be found there at all. What is missing is not access
+but a map.
+
+`window.__autoFde.probeApproval()` draws it. It walks up React's fiber tree from
+an anchor, preferring an Allow button that carries a fiber, falling back to the
+pill, and reports each component's name, its function props by name, and its
+other props by shape. An anchor with no fiber on it loses to one that has it,
+because the first Allow in the document is not necessarily the mounted one.
+
+Shapes, never contents. Props on a thread component are as likely to be the whole
+conversation as a flag, `JSON.stringify` on a fiber prop finds a cycle sooner or
+later, and this output gets pasted into chat windows. A test asserts a
+`transcript` prop is reported as `array[1]` and that its contents do not appear.
+
+The two anchors answer different halves. From a mounted Allow button the walk
+reaches the handler the click runs and the props it closes over. From the pill it
+reaches whatever is still mounted in a hidden tab, which is the set actually
+available when it matters. Comparing them is the point: the approval has to be
+driven from something in the second set.
+
+**It runs itself, because the interesting half cannot be reached by hand.** The
+first attempt at this asked for a console command while the tab was hidden, which
+is not a thing anyone can do: typing it means focusing DevTools, and the question
+is what the page looks like when nobody is looking at it. So the probe fires from
+the first Allow the panel presses, before the click since the row unmounts once
+the prompt is answered, and again from the pill when a stall is reported. Once
+each. It is a map, not a running commentary.
+
+**What the first real walk found, from a hidden tab with no row in the
+document.** Forty levels up from the pill, all of it mounted:
+
+- `startAgentLoop`, `abortAgentLoop`, `onEnterSubAgent`, `onExitSubAgent`
+- `lastPersistedAgentState={contextMap, contextOrder, name, agentSystemPrompt,
+  modeConfig, toolConfigurations, modelConfiguration, todoItems, sessionState}`
+- `activeThread`, `loadedThreadInfo={id, name, version, …}`,
+  `lastReadThreadVersionRef`
+- `userBulkApprovalSettings={create, edit, import, deploy, tag, agentSelf}`
+- `initialState={agentStatus, …, requestStatus, sessionState, …}`
+- and at level 7, the pill's own row component reporting `item=undefined`, which
+  is the missing row stated by the page itself
+
+So the thread, the agent state and the loop control are all reachable while
+Chrome is not drawing the tab. What is not there is any way to change them:
+every one of those is a prop, and props are what a component was handed. The
+functions that answer a prompt live in a context value or a hook, which is why
+`stateShapes()` reports both, filtered to shapes whose keys match
+`PROBE_ACTIONS` or `PROBE_INTERESTING`. A provider value is otherwise most of
+the application.
+
+One trap in testing it. Only props whose names match `PROBE_INTERESTING` are
+reported at all, so asserting that the contents of a prop named `transcript` do
+not leak proves nothing: that prop is never printed under any circumstances. The
+tests name it `threadItems` instead, which is reported, and assert it comes out
+as `array[1]` with its contents absent. An assertion about privacy has to be made
+against something the code actually prints.
+
+It is reached from the console rather than the panel because it is not a decision
+anyone makes while using this. Detection is already solved for the API route, as
+it happens: the pending pill is in the document even in a hidden tab, which is how
+`reachPendingPrompt()` knows to run at all. What is missing is what the page sends
+and whether every part of it can be assembled without the row.
+
+**The visibility spoof is what is left of the page's half, and it answers the
+page rather than the browser.** `document.hidden` and `document.visibilityState` are given own
 properties on `document` that report visible, and the going-hidden
 `visibilitychange` is stopped at the window in the capture phase, upstream of
 anything the page has on `document`. Applications defer work by reading those two
