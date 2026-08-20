@@ -585,18 +585,37 @@ await p1.evaluate(() => {
   b.id = 'traffic-allow';
   b.textContent = 'Allow';
   b.addEventListener('click', () => {
-    // No approval word anywhere: found only because it followed the click.
-    fetch('/ai-fde/api/threads/t1/items/9/decision', { method: 'POST', body: '{"decision":"ALLOW"}' });
+    // Shaped like the real grant: no approval word anywhere, the item order
+    // first and long enough to bury anything after it, and the part that matters
+    // in a key of its own. Found only because it followed the click.
+    const ids = Array.from({ length: 300 }, (unused, i) => `item-${i}`);
+    fetch('/ai-fde/api/threads/t1/update', {
+      method: 'POST',
+      body: JSON.stringify({
+        currentVersion: 'v9',
+        itemIdsInOrder: ids,
+        upsertedItems: { 'item-9': { kind: 'toolCall', userDecision: 'ACCEPTED' } },
+      }),
+    });
+    // In the window but not the session's API, so it stays out of the log.
+    fetch('/graphql-gateway/api/bulk?q=LoadDatasetQuery', { method: 'POST', body: '{}' });
   });
   row.appendChild(b);
   document.body.appendChild(row);
 });
 await p1.waitForTimeout(600);
 p1.off('console', collectClick);
+const grant = afterClick.filter(t => t.startsWith('[Auto FDE] traffic: fetch'));
 check('the log marks the click, so the request that grants it can be told apart',
   afterClick.some(t => t.includes('Allow clicked, what follows is the grant'))
-    && afterClick.some(t => t.includes('/items/9/decision')),
-  JSON.stringify(afterClick.filter(t => t.startsWith('[Auto FDE] traffic'))));
+    && grant.length === 1 && grant[0].includes('/threads/t1/update'),
+  JSON.stringify(grant));
+// The whole point: the grant names no field after approval, so the body has to
+// be readable without being printed whole.
+check('the item order is summarised and the rest of the grant is shown in full',
+  grant[0] && grant[0].includes('itemIdsInOrder: 300 strings')
+    && grant[0].includes('"userDecision":"ACCEPTED"'),
+  JSON.stringify(grant[0] || null));
 
 
 // ---------------------------------------------------------------------------

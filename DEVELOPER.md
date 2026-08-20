@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  76 assertions: the in-page script and the packaged
+npm run test:browser  77 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -297,13 +297,21 @@ session:
   instead, and the marker line in the log is what tells the grant apart from
   everything else the session was doing at the time.
 
-What the first capture showed: `POST /ai-fde/api/threads/{id}/metadata` carrying
-`agentStateModification.toolConfigurations`, and `POST
-/ai-fde/api/threads/{id}/update` carrying `currentVersion` and
-`itemIdsInOrder`. That second shape is a document update with optimistic
-concurrency, so sending an approval that way means holding a correct version and
-a correct item list. Getting it wrong writes to somebody's session. Know exactly
-which field flips before going near it.
+What the captures showed. The grant is the `POST
+/ai-fde/api/threads/{id}/update` that follows the click, carrying
+`currentVersion` and `itemIdsInOrder`, and it reported `fields: none`: nothing in
+it is named after approval. So searching for the word cannot find the grant, and
+the body has to be read. Read whole it is unreadable, because it leads with
+hundreds of item ids, which is why `describeBody()` reports every top-level key
+with an array of nothing but strings summarised as a count and everything else
+in full.
+
+The shape that makes it a document update with optimistic concurrency is the
+thing to weigh before building on it. Sending one means holding a version the
+server still accepts and an item list that is correct, and getting either wrong
+writes junk into a live session. A read-modify-write against the thread is the
+tractable version of that; maintaining a shadow copy from observed traffic is
+not.
 
 It is reached from the console rather than the panel because it is not a decision
 anyone makes while using this. Detection is already solved for the API route, as

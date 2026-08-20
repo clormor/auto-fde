@@ -393,6 +393,35 @@
     return found;
   }
 
+  // The grant carries no field named after approval, so there is nothing to
+  // search for and the body has to be read. Read whole it is unreadable: the
+  // thread document leads with hundreds of item ids. So every top-level key is
+  // reported, an array of nothing but strings as a count and a sample, and
+  // everything else in full up to a generous limit. Whatever an approval sets
+  // lives in one of the keys that is not the item order.
+  const SHAPE_VALUE_LIMIT = 1200;
+  const SHAPE_SAMPLE = 2;
+
+  function describeBody(text) {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return [`body: ${shorten(text, BODY_LIMIT)}`];
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      return [`body: ${shorten(text, BODY_LIMIT)}`];
+    }
+    return Object.keys(parsed).map(key => {
+      const value = parsed[key];
+      if (Array.isArray(value) && value.every(item => typeof item === 'string')) {
+        return `${key}: ${value.length} strings, first `
+          + `${JSON.stringify(value.slice(0, SHAPE_SAMPLE))}`;
+      }
+      return `${key}: ${shorten(JSON.stringify(value), SHAPE_VALUE_LIMIT)}`;
+    });
+  }
+
   // Called when a prompt is clicked, so the log says which requests followed it.
   function markApprovalClick() {
     if (!watching) return;
@@ -416,11 +445,13 @@
     const report = (how, url, body) => {
       const text = typeof body === 'string' ? body : (body == null ? '' : String(body));
       const following = Date.now() < capturingUntil;
+      const onApi = url.includes(SESSION_API);
       const named = APPROVAL_TRAFFIC.test(url) || APPROVAL_TRAFFIC.test(text);
-      // Outside the window after a click, the bar is the session's own API and
-      // the word. Without the first half, a repository pull request query called
-      // QuickApprovalProjectQuery is the loudest thing in the log.
-      if (!everything && !following && !(url.includes(SESSION_API) && named)) return;
+      // The session's own API either way. The word is only asked for outside the
+      // window, because the grant turned out not to carry it, and without the
+      // first half a repository query called QuickApprovalProjectQuery is the
+      // loudest thing in the log and a dataset query is the second.
+      if (!everything && !(onApi && (following || named))) return;
 
       const fields = approvalFields(text);
       const signature = `${how} ${url} ${fields.join(';')}`;
@@ -430,12 +461,19 @@
         seen.add(signature);
       }
 
+      // In the window the shape is printed instead of the body: the grant is a
+      // thread document, and every key of it except the item order is worth
+      // reading, while the item order is hundreds of ids and never the point.
+      const detail = following
+        ? describeBody(text).map(line => `  ${line}`)
+        : [`  body: ${shorten(text, BODY_LIMIT)}`];
+
       // The colon is load-bearing: it is what the line the user is asked to copy
       // has and the banner below does not.
       console.log([
         `[Auto FDE] traffic: ${how} ${url}`,
         fields.length ? `  fields: ${fields.join('\n          ')}` : '  fields: none',
-        text ? `  body: ${shorten(text, BODY_LIMIT)}` : '',
+        ...(text ? detail : []),
       ].filter(Boolean).join('\n'));
     };
 
