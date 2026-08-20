@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  83 assertions: the in-page script and the packaged
+npm run test:browser  85 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -390,6 +390,31 @@ functions that answer a prompt live in a context value or a hook, which is why
 `stateShapes()` reports both, filtered to shapes whose keys match
 `PROBE_ACTIONS` or `PROBE_INTERESTING`. A provider value is otherwise most of
 the application.
+
+**Both walks, against a real session, and what they establish.** From a mounted
+Allow button, the click is two steps: `handleAllow` on the button pair at level 3,
+over `handleUpdateContextItem` and `startAgentLoop` on the row at level 5, against
+a `toolUseId`. Level 26 names the item it is waiting on outright,
+`maybePendingUserActionContextItemId`.
+
+From the pill, with no row in the document, level 32 carries a context value of
+`{__enqueueEffect, __setState, agent, dispatch, getSnapshot, subscribe}`, over
+state of `{agentStatus, contextMap, contextOrder, requestStatus, sessionState, …}`
+at level 29, with `startAgentLoop` still at level 16. The store and the loop are
+both reachable in a hidden tab. The row's own updater is not, because it lives
+inside the row.
+
+So the shape of a fix is: read the pending item out of the store, set its
+response, start the loop. `probeStore()` is the last read-only step towards it. It
+finds the store the same way `stateShapes()` reports, narrowed to something
+answering `getSnapshot` plus `dispatch` or `__setState`; reports the store's keys,
+`agent`'s keys, the snapshot's keys, `agentStatus`, `requestStatus`, the length of
+`contextOrder`; and searches `contextMap` a few levels deep for an item whose
+`toolResponse.state` matches `/pending/i`, because the traffic capture showed that
+item nested under `content`.
+
+It reads and reports and does not write. Dispatching a guessed action into
+somebody's live session is the thing worth being slow about.
 
 One trap in testing it. Only props whose names match `PROBE_INTERESTING` are
 reported at all, so asserting that the contents of a prop named `transcript` do

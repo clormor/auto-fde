@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             83 assertions
+npm run test:browser                             85 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -87,6 +87,10 @@ and no `dist/`.
   `window.__autoFde.watchTraffic()`, and its output gets pasted into chat
   windows. Headers never. Stop unwraps `fetch`, `XMLHttpRequest` and
   `WebSocket.prototype.send`.
+- **`probeStore()` reads and does not write.** It is the last step before
+  driving the store, and dispatching a guessed action into a live session is
+  irreversible. Keep it read-only until the action shape is known from a real
+  capture.
 - **`probeApproval()` reports shapes, never contents.** It walks React fibers
   from an Allow button or the pending pill and names components and function
   props. Props on a thread component hold the conversation, fiber props are

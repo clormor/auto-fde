@@ -647,6 +647,109 @@
     return out;
   }
 
+  // ---------- Store probe ----------
+  // The walk from the pill found the store: a context value of
+  // {__enqueueEffect, __setState, agent, dispatch, getSnapshot, subscribe},
+  // mounted with no row in the document, over state of {agentStatus, contextMap,
+  // contextOrder, requestStatus, sessionState, …}. The walk from a mounted button
+  // found what the click does: handleAllow on the button pair, over
+  // handleUpdateContextItem and startAgentLoop on the row, against a toolUseId.
+  //
+  // What is left to establish is how to say it. This reads the store and reports
+  // the pending item and the names the store answers to. Read-only, on purpose:
+  // dispatching a guessed action into somebody's live session is the one thing
+  // worth being slow about.
+  const PENDING_STATE = /pending/i;
+  const ITEM_SEARCH_DEPTH = 4;
+
+  function looksLikeStore(value) {
+    return !!value && typeof value === 'object'
+      && typeof value.getSnapshot === 'function'
+      && (typeof value.dispatch === 'function' || typeof value.__setState === 'function');
+  }
+
+  // The store hides in the same two places the setters do, so the search is the
+  // one stateShapes() reports from, narrowed to what answers like a store.
+  function findStore(el) {
+    let fiber = fiberFor(el);
+    for (let level = 0; fiber && level < PROBE_LEVELS; level++, fiber = fiber.return) {
+      const props = fiber.memoizedProps;
+      if (props && typeof props === 'object' && looksLikeStore(props.value)) {
+        return { store: props.value, where: `${level} ${fiberName(fiber)} value` };
+      }
+      let hook = fiber.memoizedState;
+      for (let i = 0; hook && i < PROBE_HOOKS; i++, hook = hook.next) {
+        if (looksLikeStore(hook.memoizedState)) {
+          return { store: hook.memoizedState, where: `${level} ${fiberName(fiber)} hook ${i}` };
+        }
+      }
+    }
+    return null;
+  }
+
+  // The traffic capture gave the shape to look for: a tool-usage item whose
+  // toolResponse carries a state of pending_approval. It sits under content in
+  // what goes over the wire, so a few levels are searched rather than one.
+  function findPendingItem(value, path, depth) {
+    if (!value || typeof value !== 'object' || depth > ITEM_SEARCH_DEPTH) return null;
+    const response = value.toolResponse;
+    if (response && typeof response.state === 'string' && PENDING_STATE.test(response.state)) {
+      return { path, item: value };
+    }
+    const keys = Array.isArray(value) ? value.keys() : Object.keys(value);
+    for (const key of keys) {
+      const found = findPendingItem(value[key], `${path}.${key}`, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function probeStore() {
+    const anchor = probeAnchor();
+    if (!anchor) {
+      console.warn('[Auto FDE] store: nothing pending to start from.');
+      return 'nothing pending';
+    }
+    const found = findStore(anchor.el);
+    if (!found) {
+      console.warn(`[Auto FDE] store: no store reachable from ${anchor.what}.`);
+      return 'no store';
+    }
+
+    const lines = [`[Auto FDE] store: found at ${found.where}, from ${anchor.what}`];
+    lines.push(`  store: ${describeValue(found.store)}`);
+    lines.push(`  agent: ${describeValue(found.store.agent)}`);
+
+    let snapshot = null;
+    try {
+      snapshot = found.store.getSnapshot();
+    } catch (err) {
+      lines.push(`  getSnapshot threw: ${err.message}`);
+    }
+    if (snapshot && typeof snapshot === 'object') {
+      lines.push(`  snapshot: ${describeValue(snapshot)}`);
+      // Short enumerations, safe to print, and they say whether the loop is
+      // waiting on the user or on something else.
+      ['agentStatus', 'requestStatus'].forEach(key => {
+        if (typeof snapshot[key] === 'string') lines.push(`  ${key}: ${snapshot[key]}`);
+      });
+      if (Array.isArray(snapshot.contextOrder)) {
+        lines.push(`  contextOrder: ${snapshot.contextOrder.length} ids`);
+      }
+      const pending = findPendingItem(snapshot.contextMap, 'contextMap', 0);
+      if (!pending) {
+        lines.push('  pending item: none found in contextMap');
+      } else {
+        lines.push(`  pending item: at ${pending.path}`);
+        lines.push(`    item: ${describeValue(pending.item)}`);
+        lines.push(`    toolName: ${JSON.stringify(pending.item.toolName)}`);
+        lines.push(`    toolResponse: ${JSON.stringify(pending.item.toolResponse)}`);
+      }
+    }
+    console.log(lines.join('\n'));
+    return 'probed';
+  }
+
   function probeFrom(el, what) {
     let fiber = fiberFor(el);
     if (!fiber) {
@@ -1107,6 +1210,7 @@
       // The state as it stands with the row missing. That is the only moment
       // worth mapping, and the one moment nobody can be at the console for.
       probeFrom(marker, 'the pending pill, with no row in the document');
+      probeStore();
       return;
     }
     console.log(`[Auto FDE] a prompt is pending off screen; went to it (attempt ${jumpAttempts})`);
@@ -1260,6 +1364,7 @@
     stop: () => stopBtn.click(),
     watchTraffic,
     probeApproval,
+    probeStore,
   };
   console.log('[Auto FDE] Running on', location.href);
 })();

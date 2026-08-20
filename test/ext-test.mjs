@@ -178,7 +178,32 @@ const DEAD_PILL_PAGE = `<!doctype html><html><body>
         // a store. The functions that answer a prompt live in these, not in
         // props, which is what the first real walk established.
         type: { displayName: 'AgentStateContext.Provider' },
-        memoizedProps: { value: { respondToToolCall: () => {}, contextMap: {} } },
+        memoizedProps: { value: {
+          respondToToolCall: () => {},
+          contextMap: {},
+          // The store, shaped as the real one is, over state shaped as the real
+          // one is, with the pending item nested under content the way it goes
+          // over the wire.
+          getSnapshot: () => ({
+            agentStatus: 'waiting_for_user',
+            requestStatus: 'idle',
+            contextOrder: ['a', 'b'],
+            contextMap: {
+              'item-9': {
+                content: [{
+                  id: 'item-9',
+                  type: 'tool-usage',
+                  toolName: 'container_execute_terminal_command',
+                  toolResponse: { state: 'pending_approval' },
+                }],
+              },
+            },
+          }),
+          dispatch: () => {},
+          __setState: () => {},
+          subscribe: () => {},
+          agent: { respondToPendingUserAction: () => {}, startAgentLoop: () => {} },
+        } },
         memoizedState: {
           memoizedState: { pendingApproval: { id: 'item-9' }, dispatch: () => {} },
           next: { memoizedState: { unrelated: 'skipped' }, next: null },
@@ -885,8 +910,25 @@ check('the stall probe reports a thread prop by shape and not by content',
     && !stallProbe[0].includes('the whole session'),
   JSON.stringify(stallProbe[0] || null));
 // The setter is the thing being looked for, and props never carry it.
+// The last read-only step: the store, the pending item in it, and the names it
+// answers to. Dispatching a guessed action into a live session is the thing to
+// be slow about, so this reads and reports and does not write.
+const storeProbe = probedStall.filter(t => t.startsWith('[Auto FDE] store:'));
+check('a stall reads the store and reports what it answers to',
+  storeProbe.length === 1
+    && storeProbe[0].includes('store: {respondToToolCall, contextMap, getSnapshot')
+    && storeProbe[0].includes('agent: {respondToPendingUserAction, startAgentLoop}')
+    && storeProbe[0].includes('agentStatus: waiting_for_user'),
+  JSON.stringify(storeProbe[0] || null));
+check('the store probe finds the pending item wherever it is nested',
+  storeProbe[0]
+    && storeProbe[0].includes('pending item: at contextMap.item-9.content.0')
+    && storeProbe[0].includes('toolName: "container_execute_terminal_command"')
+    && storeProbe[0].includes('toolResponse: {"state":"pending_approval"}'),
+  JSON.stringify(storeProbe[0] || null));
+
 check('the probe reaches into context values and hooks, where the setters are',
-  stallProbe[0] && stallProbe[0].includes('value: {respondToToolCall, contextMap}')
+  stallProbe[0] && stallProbe[0].includes('value: {respondToToolCall, contextMap')
     && stallProbe[0].includes('hook 0: {pendingApproval, dispatch}')
     && !stallProbe[0].includes('unrelated'),
   JSON.stringify(stallProbe[0] || null));
