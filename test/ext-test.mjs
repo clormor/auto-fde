@@ -680,6 +680,60 @@ await p10.waitForTimeout(600);
 check('a keep-alive that could not start says so in the log',
   (await text(p10, '#af-log')).includes('click the page once to keep the tab awake'));
 
+// ---------------------------------------------------------------------------
+// Chrome draws no frames for a hidden tab, and the pending approval was never in
+// the document while the tab was in the background. Nothing here can make Chrome
+// draw it. What it can do is stop the page standing down of its own accord, so
+// everything asking whether the tab is in front is answered yes, and the event
+// saying otherwise is kept from the page. The event saying the tab is back is
+// not: that is the one the page needs.
+//
+// Headless has no way to genuinely hide a page, so the real reader is what gets
+// stood in for here. The script reads it off the prototype at startup, which is
+// what this replaces before injecting.
+// ---------------------------------------------------------------------------
+const p11 = await mockPage(browser, SESSION_URL);
+await p11.evaluate(() => {
+  window.__realVis = 'visible';
+  Object.defineProperty(Document.prototype, 'visibilityState', {
+    get: () => window.__realVis, configurable: true });
+  Object.defineProperty(Document.prototype, 'hidden', {
+    get: () => window.__realVis === 'hidden', configurable: true });
+  window.__pageHeard = [];
+  document.addEventListener('visibilitychange', () => window.__pageHeard.push('heard'));
+});
+await p11.evaluate(SCRIPT);
+await p11.waitForTimeout(300);
+
+const goHidden = () => p11.evaluate(() => {
+  window.__realVis = 'hidden';
+  document.dispatchEvent(new Event('visibilitychange'));
+});
+const comeBack = () => p11.evaluate(() => {
+  window.__realVis = 'visible';
+  document.dispatchEvent(new Event('visibilitychange'));
+});
+
+await goHidden();
+await p11.waitForTimeout(100);
+check('the page is not told the tab went into the background',
+  (await p11.evaluate(() => window.__pageHeard.length)) === 0);
+check('the page reads the tab as visible while it is hidden',
+  await p11.evaluate(() => document.visibilityState === 'visible' && document.hidden === false));
+
+await comeBack();
+await p11.waitForTimeout(100);
+check('the page is told when the tab comes back',
+  (await p11.evaluate(() => window.__pageHeard.length)) === 1,
+  JSON.stringify(await p11.evaluate(() => window.__pageHeard)));
+
+await press(p11, '#af-visible');
+await goHidden();
+check('unticking hands the page its real visibility back',
+  await p11.evaluate(() => document.visibilityState === 'hidden' && document.hidden === true));
+check('and the page hears the event again once it is unticked',
+  (await p11.evaluate(() => window.__pageHeard.length)) === 2);
+
 await browser.close();
 
 // ---------------------------------------------------------------------------

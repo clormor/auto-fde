@@ -142,6 +142,58 @@
     reportKeepAlive('Off');
   }
 
+  // ---------- Telling the page the tab is visible ----------
+  // Chrome produces no frames for a hidden tab, and a callback that is delivered
+  // with the frame, ResizeObserver and IntersectionObserver among them, is not
+  // delivered at all. The log shows what that costs: while the tab was in the
+  // background the pending approval was never in the document to be pressed, six
+  // attempts to reach it found nothing, and the first attempt after the tab was
+  // looked at found it at once.
+  //
+  // Nothing here can make Chrome draw the tab. What it can do is stop the page
+  // standing down on its own account, which applications do by reading
+  // document.hidden and by acting on visibilitychange. Both are answered as
+  // though the tab were in front: the properties report visible, and the event
+  // saying otherwise is kept from the page. The event saying the tab is back is
+  // let through, because that is the one the page needs in order to catch up on
+  // whatever it deferred.
+  //
+  // How much of Foundry's standing down is its own choice rather than Chrome's is
+  // not knowable from here, which is why this is a checkbox and not an
+  // assumption.
+  const realVisibility = (() => {
+    const descriptor = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
+    const read = descriptor && descriptor.get;
+    // With no descriptor to read the truth from, reporting visible means the
+    // suppression below never fires, which is the safe way to be wrong.
+    return () => (read ? read.call(document) : 'visible');
+  })();
+
+  let visibilitySpoofed = false;
+
+  function startVisibilitySpoof() {
+    if (visibilitySpoofed) return;
+    try {
+      Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+      Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+    } catch (err) {
+      console.warn('[Auto FDE] could not tell the page it is visible:', err.message);
+      return;
+    }
+    visibilitySpoofed = true;
+    console.log('[Auto FDE] tell the page the tab is visible: On');
+  }
+
+  function stopVisibilitySpoof() {
+    if (!visibilitySpoofed) return;
+    // Own properties, so deleting them uncovers the real getters on the
+    // prototype rather than leaving the page with no answer at all.
+    delete document.hidden;
+    delete document.visibilityState;
+    visibilitySpoofed = false;
+    console.log('[Auto FDE] tell the page the tab is visible: Off');
+  }
+
   // ---------- Network-error auto-resume ----------
   // Set from the checkbox, which carries the default so the two cannot drift.
   let autoResumeEnabled = false;
@@ -421,6 +473,11 @@
             <span>Automatically resume after a network error</span>
           </label>
           <div class="hint">Tells the agent to carry on once the connection is back.</div>
+          <label class="row" style="margin-top:5px">
+            <input type="checkbox" id="af-visible" checked>
+            <span>Tell the page the tab is visible</span>
+          </label>
+          <div class="hint">Stops Foundry standing down while you work elsewhere.</div>
         </div>
 
         <div class="sec">
@@ -485,6 +542,14 @@
   };
   autoResumeEnabled = resumeBox.checked;
   if (autoResumeEnabled) reportResume('watching');
+
+  // Ticked by default, because working in another tab is the reason this exists
+  // and it costs nothing when the tab is in front.
+  const visibleBox = shadow.querySelector('#af-visible');
+  visibleBox.onchange = e => {
+    e.target.checked ? startVisibilitySpoof() : stopVisibilitySpoof();
+  };
+  if (visibleBox.checked) startVisibilitySpoof();
 
   // The panel remembers where it was put and whether it was collapsed. Both go
   // through these, because localStorage throws outright rather than returning
@@ -621,16 +686,16 @@
   // What to send when a stall has to be explained. Whether the button is in the
   // document at all is the one thing that separates a list that has not rendered
   // the row from a row that is there and not being matched, and it cannot be
-  // read off the panel.
+  // read off the panel. Flat text rather than an object, because an object
+  // arrives in the console collapsed and gets reported as "Object". The
+  // visibility comes from the real reader, so the spoof cannot lie in a
+  // diagnostic.
   function stallReport() {
     const labels = Array.from(document.querySelectorAll('button'))
       .map(b => (b.innerText || b.getAttribute('aria-label') || '').trim())
       .filter(t => /allow/i.test(t));
-    return {
-      visibility: document.visibilityState,
-      buttons: document.querySelectorAll('button').length,
-      allowLabels: labels,
-    };
+    return `visibility=${realVisibility()} buttons=${document.querySelectorAll('button').length}`
+      + ` allow=[${labels.join(' | ') || 'none'}]`;
   }
 
   function reachPendingPrompt() {
@@ -663,10 +728,10 @@
     if (jumpAttempts >= MAX_JUMPS && !reportedStall) {
       reportedStall = true;
       appendLog(new Date().toLocaleTimeString(), 'off-screen prompt still out of reach');
-      console.warn('[Auto FDE] off-screen prompt still out of reach; slowing down.', stallReport());
+      console.warn(`[Auto FDE] off-screen prompt still out of reach; slowing down. ${stallReport()}`);
       return;
     }
-    console.log(`[Auto FDE] a prompt is pending off screen; went to it (${jumpAttempts}/${MAX_JUMPS})`);
+    console.log(`[Auto FDE] a prompt is pending off screen; went to it (attempt ${jumpAttempts})`);
   }
 
   function scan() {
@@ -712,20 +777,22 @@
   observer.observe(document.body, { childList: true, subtree: true });
   scan();
 
-  // Chrome stops producing frames for a hidden tab, and a windowed list that
-  // needs one to mount a row will not produce the button until the tab is looked
-  // at again. That first look has to be acted on rather than waited on: the
-  // observer only fires if something changes, and a session sitting on an
-  // approval changes nothing at all, so the 2000ms backstop was the only thing
-  // left and Chrome had throttled it to once a minute. The budget is reset
-  // because being looked at is the one event that changes whether a jump can
-  // work.
-  on(document, 'visibilitychange', () => {
-    if (document.visibilityState !== 'visible') return;
+  // Registered in the capture phase on window, which is upstream of anything the
+  // page has on document, so an event suppressed here never reaches it.
+  on(window, 'visibilitychange', event => {
+    if (realVisibility() !== 'visible') {
+      if (visibilitySpoofed) event.stopImmediatePropagation();
+      return;
+    }
+    // Being looked at is the one event that changes whether a jump can work,
+    // because Chrome starts producing frames again. It has to be acted on rather
+    // than waited on: a session sitting on an approval changes nothing, so the
+    // observer never fires, and the only thing left is the 2000ms backstop, which
+    // Chrome has throttled to once a minute by then.
     resetJumps();
     lastJumpAt = 0;
     scan();
-  });
+  }, true);
 
   // Backstop for a prompt that somehow arrives without a mutation this observer
   // sees. This one is a timer, so it is throttled in a hidden tab, which is
@@ -746,6 +813,9 @@
     clearInterval(backstop);
     clearTimeout(resumeTimer);
     stopKeepAlive();
+    // The page has to be handed the truth back, or it keeps reading its own
+    // visibility off a panel that is no longer there.
+    stopVisibilitySpoof();
     recovering = false;
     teardown.forEach(undo => undo());
     teardown.length = 0;

@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  64 assertions: the in-page script and the packaged
+npm run test:browser  69 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -219,11 +219,40 @@ the 2000ms backstop is exactly the throttled timer that cannot be relied on.
 Without the listener the first thing to notice the tab was back was whatever the
 page happened to redraw.
 
-When the fast attempts run out, `stallReport()` goes to the console with
-`document.visibilityState`, the number of buttons in the document and any button
-label containing "allow". Whether the button is in the document at all is what
-separates a list that has not rendered the row from a row that is there and not
-being matched, and it cannot be read off the panel.
+When the fast attempts run out, `stallReport()` goes to the console with the real
+visibility, the number of buttons in the document and any button label containing
+"allow". Whether the button is in the document at all is what separates a list
+that has not rendered the row from a row that is there and not being matched, and
+it cannot be read off the panel. It is flat text rather than an object because an
+object arrives in the console collapsed and comes back reported as "Object".
+
+**The button is not in the document while the tab is hidden.** That is measured,
+not assumed. A jump is only ever attempted when no `Allow`-labelled button exists
+anywhere in the document, and a session logged six of them across a minute in the
+background, then found the button on the first attempt after the tab was clicked.
+So the pending row is not mounted at all while Chrome is not drawing the tab,
+which fits a list that mounts rows off a `ResizeObserver` or an
+`IntersectionObserver`: those callbacks are delivered with the frame, and there
+is no frame.
+
+**The visibility spoof is what is left, and it answers the page rather than the
+browser.** `document.hidden` and `document.visibilityState` are given own
+properties on `document` that report visible, and the going-hidden
+`visibilitychange` is stopped at the window in the capture phase, upstream of
+anything the page has on `document`. Applications defer work by reading those two
+properties and by acting on that event, and this stops Foundry doing so on its own
+account. What it cannot do is make Chrome draw the tab, so it fixes the page's
+half of the problem and not the compositor's. Whether that is enough is a question
+about Foundry that cannot be answered from here, which is why it is a checkbox,
+ticked by default.
+
+Three details are load-bearing. The coming-back event is let through, because that
+is the one the page needs in order to catch up on anything it did defer.
+`realVisibility()` keeps a reference to the prototype getter taken before the
+properties are defined, so the script's own decisions and its diagnostics read the
+truth rather than its own answer. And Stop deletes the properties, uncovering the
+real getters, because a page left reading its visibility off a panel that has been
+removed is a worse state than either setting.
 
 **Categories are matched riskiest first, which is not the order they are shown
 in.** A prompt reading "deploy the build, view the plan first" matches both read
@@ -376,6 +405,10 @@ Kept because each one is a trap that is easy to reintroduce.
   shipped with a hard cap on attempts, so a prompt the page would not render
   while the tab was hidden was logged as unreachable and never tried again. The
   cap now backs off instead of stopping, and `visibilitychange` is acted on.
+- **The first stall report was unreadable.** It passed an object to
+  `console.warn`, which arrives collapsed, so the one fact worth having came
+  back quoted as "Object". Diagnostics that have to survive being copied out of
+  somebody else's console are flat text.
 - **The name.** It shipped as `AI FDE AutoAllow` in an `ai-fde-autoallow`
   folder. Renaming to `Auto FDE` changed the folder, which changes the extension
   ID that Chrome derives from an unpacked path, which means the configured base
