@@ -107,7 +107,10 @@
   // ---------- Network-error auto-resume ----------
   let autoResumeEnabled = false;
   let recovering = false;
-  const RESUME_TEXT = 'resume after network error';
+  // What gets typed into the chat and sent once the connection is back. It is a
+  // fresh instruction, not a replay: the agent knows what it was doing, so it
+  // only needs telling to carry on.
+  const RESUME_TEXT = 'Networking restored. Resume what you were doing.';
 
   const NETWORK_PATTERNS = [
     /network error/i,
@@ -353,7 +356,7 @@
             <input type="checkbox" id="af-resume-toggle">
             <span>Automatically resume after a network error</span>
           </label>
-          <div class="hint">Resends the last message once the connection is back.</div>
+          <div class="hint">Tells the agent to carry on once the connection is back.</div>
         </div>
 
         <div class="sec">
@@ -468,7 +471,7 @@
   }
   function recordResume() {
     const t = new Date().toLocaleTimeString();
-    appendLog(t, `sent "${RESUME_TEXT}"`);
+    appendLog(t, 'sent the resume message');
     console.log(`[Auto FDE] ${t} — auto-sent resume message`);
   }
 
