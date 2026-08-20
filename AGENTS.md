@@ -25,30 +25,31 @@ npm run test:browser                             44 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
-The extension is distributed by cloning the repo, so there is nothing to
-package and no `dist/`.
+The extension is distributed by cloning the repo, so there is nothing to package
+and no `dist/`.
 
 ## Rules specific to this repo
 
 - **Never hardcode a Foundry hostname.** Not in `manifest.json`, not in a
   constant, not as a default in `storage.js`, not as a fallback. Origins come
-  from `chrome.storage.sync` via the options page. Tests use `example.com` hosts.
-- **Keep `gate.js` free of `chrome.*`.** It is imported directly by the node test
-  suite. Anything needing a chrome API goes in `background.js`, `storage.js` or
-  `options.js`.
+  from `chrome.storage.sync` via the options page. Tests use `example.com`
+  hosts.
+- **Keep `gate.js` free of `chrome.*`.** It is imported directly by the node
+  test suite. Anything needing a chrome API goes in `background.js`,
+  `storage.js` or `options.js`.
 - **Do not add permissions to widen access.** Host access is
   `optional_host_permissions`, requested per origin at runtime. Adding
   `host_permissions` or a `tabs` permission to make something easier is a
   regression, not a fix.
-- **`world: "MAIN"` on the injection is load-bearing, not preference.** See
-  DEVELOPER.md. Moving `auto-fde.js` to an isolated world breaks React value
-  setting and the double-press guard.
+- **`world: "MAIN"` on the injection is load-bearing.** Moving `auto-fde.js` to
+  an isolated world breaks React value setting and the double-press guard. See
+  DEVELOPER.md.
 - **A MAIN-world script cannot see `chrome.*`.** Config reaches `auto-fde.js`
   through `window.__autoFdeConfig`, injected by `background.js` first.
 - **Never call `chrome.action.disable()`.** In Manifest V3 it does not grey the
-  icon; it only breaks the click, turning it into a context menu. The button must
-  stay live on every page. Signal readiness with `chrome.action.setIcon()` and
-  the tooltip, via `describeButtonState()` in `gate.js`.
+  icon; it only breaks the click, turning it into a context menu. The button
+  must stay live on every page. Signal readiness with `chrome.action.setIcon()`
+  and the tooltip, via `describeButtonState()` in `gate.js`.
 - **Report failures where a non-technical user will see them.** The service
   worker console is not that place. Reasons belong in the action's tooltip via
   `describeUrlMismatch()` and `flagProblem()`.
@@ -75,10 +76,13 @@ package and no `dist/`.
 - **The panel must stay bounded.** It sits over somebody's work. Ten log rows, a
   `max-height` on the panel, and log lines written as text nodes rather than
   `innerHTML`.
-- **Bump `version` in `auto-fde/manifest.json`** for any shipped change.
-  It is the only place a version lives.
-- **Docs split:** README.md is installation and setup only. Anything more
-  involved goes in DEVELOPER.md.
+- **Bump `version` in `auto-fde/manifest.json`** for any shipped change. It is
+  the only place a version lives.
+- **Docs split:** README.md covers installing, adding a base URL, everyday use
+  and first-line troubleshooting, in that order. Design rationale, tests and
+  anything a user cannot act on go in DEVELOPER.md.
+- **Assertion counts are quoted in this file and DEVELOPER.md.** Change a suite
+  and update both.
 
 ## Writing style
 
