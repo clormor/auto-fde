@@ -179,6 +179,10 @@ check('keeping the tab awake is on by default',
   await p1.evaluate(() => document.getElementById('af-host').shadowRoot
     .querySelector('#af-keepalive').checked));
 
+check('resuming after a network error is on by default',
+  await p1.evaluate(() => document.getElementById('af-host').shadowRoot
+    .querySelector('#af-resume-toggle').checked));
+
 check('the resume toggle says what it does',
   (await text(p1, 'label:has(#af-resume-toggle)'))
     .startsWith('Automatically resume'));
@@ -377,7 +381,6 @@ check('a button label cannot inject markup into the log',
 await p1.evaluate(() => { window.fetch = async () => ({ ok: true, status: 200 }); });
 
 const sendsSoFar = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
-await press(p1, '#af-resume-toggle');
 await p1.evaluate(() => {
   const banner = document.createElement('div');
   banner.className = 'bp6-callout-intent-danger';
@@ -397,8 +400,6 @@ await p1.waitForTimeout(3000);
 const sendsLater = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
 check('a banner still on screen does not send a second resume message',
   sendsLater === sendsAfter, `sends=${sendsLater - sendsAfter}`);
-
-await press(p1, '#af-resume-toggle');
 
 // ---------------------------------------------------------------------------
 // The header is the drag handle and the transport controls sit inside it, so a

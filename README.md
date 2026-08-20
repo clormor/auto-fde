@@ -54,8 +54,11 @@ Two settings sit below the categories:
   the usual reason to run this. Inaudible audio stops Chrome throttling the tab.
   Chrome will not let a page start audio until somebody touches it, so click
   anywhere in the tab once.
-- **Automatically resume after a network error**, off by default. It tells the
-  agent to carry on once the connection is back.
+- **Automatically resume after a network error**, on by default, since a
+  dropped connection is what actually ends an unattended session. Once the
+  connection has been back for a couple of seconds it types one line into the
+  chat telling the agent to carry on, and sends it. Every send is in the panel's
+  log. Untick it if you would rather nothing was said on your behalf.
 
 **Stop** shuts it down, and so does reloading the page. Press the toolbar button
 again to start it back up.

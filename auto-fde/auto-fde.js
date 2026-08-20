@@ -138,6 +138,7 @@
   }
 
   // ---------- Network-error auto-resume ----------
+  // Set from the checkbox, which carries the default so the two cannot drift.
   let autoResumeEnabled = false;
   let recovering = false;
   let resumeTimer = null;
@@ -411,7 +412,7 @@
           </label>
           <div class="hint">Inaudible audio stops Chrome throttling this tab.</div>
           <label class="row" style="margin-top:5px">
-            <input type="checkbox" id="af-resume-toggle">
+            <input type="checkbox" id="af-resume-toggle" checked>
             <span>Automatically resume after a network error</span>
           </label>
           <div class="hint">Tells the agent to carry on once the connection is back.</div>
@@ -466,11 +467,19 @@
     if (failed) appendLog(new Date().toLocaleTimeString(), text);
   }
 
-  shadow.querySelector('#af-resume-toggle').onchange = e => {
+  // Ticked by default, for the same reason the keep-alive is: the tab is in the
+  // background and nobody is watching it. A dropped connection is what actually
+  // ends a long session, and an agent sitting behind an error banner until
+  // somebody looks at the tab is the failure this is here to prevent. It writes
+  // one line into the chat to do it, which is why the log records every send.
+  const resumeBox = shadow.querySelector('#af-resume-toggle');
+  resumeBox.onchange = e => {
     autoResumeEnabled = e.target.checked;
     reportResume(autoResumeEnabled ? 'watching' : 'off');
     if (!autoResumeEnabled) recovering = false;
   };
+  autoResumeEnabled = resumeBox.checked;
+  if (autoResumeEnabled) reportResume('watching');
 
   // The panel remembers where it was put and whether it was collapsed. Both go
   // through these, because localStorage throws outright rather than returning

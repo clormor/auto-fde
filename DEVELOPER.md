@@ -25,6 +25,10 @@ Practical consequences worth stating out loud:
 - The block list is three words in a substring match on the prompt, not a
   reading of what the action does. A destructive action whose prompt does not
   happen to use one of them gets clicked.
+- Auto-resume is on by default, and it writes into the chat on your behalf. It
+  is one fixed line telling the agent to carry on, sent once the connection has
+  answered two probes, and every send is in the panel's log. Untick it if
+  nothing should be said in your name.
 - Leave it running on a long unattended session and you will not know what was
   approved beyond the last ten lines in the panel and whatever is in the
   console.
@@ -61,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  54 assertions: the in-page script and the packaged
+npm run test:browser  55 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -184,6 +188,12 @@ anything that exact match has not already excluded, and `delete`, `force` and
 the prompt's text, which is where the risk is. `always` and `forever` stay out
 of that list: a prompt offering `Allow` beside `Always allow` carries the second
 label in its own text, and blocking on it would refuse the ordinary case.
+
+**Auto-resume is ticked by default, for the same reason the keep-alive is.**
+The tab is in the background and nobody is watching it, so an agent sitting
+behind an error banner until somebody looks at the tab is the failure the whole
+thing is here to prevent. The checkbox in the markup carries that default and
+`autoResumeEnabled` is read from it at startup, so the two cannot drift.
 
 **One recovery per error banner.** Foundry's callout does not reliably clear
 itself once the connection is back, so a banner still on screen after the resume
