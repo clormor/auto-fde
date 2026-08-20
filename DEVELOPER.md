@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  83 assertions: the in-page script and the packaged
+npm run test:browser  78 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -226,194 +226,87 @@ that has not rendered the row from a row that is there and not being matched, an
 it cannot be read off the panel. It is flat text rather than an object because an
 object arrives in the console collapsed and comes back reported as "Object".
 
-**The button is not in the document while the tab is hidden.** That is measured,
-not assumed. A jump is only ever attempted when no `Allow`-labelled button exists
+**The button is not in the document while the tab is hidden.** Measured, not
+assumed. A jump is only ever attempted when no `Allow`-labelled button exists
 anywhere in the document, and a session logged six of them across a minute in the
-background, then found the button on the first attempt after the tab was clicked.
-So the pending row is not mounted at all while Chrome is not drawing the tab,
-which fits a list that mounts rows off a `ResizeObserver` or an
-`IntersectionObserver`: those callbacks are delivered with the frame, and there
-is no frame.
+background with `visibility=hidden buttons=110 allow=[none] allowByText=0`, then
+found the button on the first attempt after the tab was clicked. Chrome draws no
+frames for a hidden tab, and a windowed list mounts rows off callbacks that
+arrive with the frame, so the row is never there. Telling the page it is visible
+does not change that either: the same reading came back with the spoof on.
 
-**Measured, with the spoof on: a hidden tab cannot be made to work.** The stall
-report from a background tab running the spoof reads
-`visibility=hidden buttons=77 allow=[none] allowByText=0`. Seventy-seven buttons
-in the document, none of them an approval, and the transcript rows not among
-them. Telling the page it is visible did not change that, so what stops the row
-being mounted is Chrome not drawing the tab rather than Foundry deciding to stand
-down. Nothing an extension can reach from inside the page fixes that, and the
-options that would are outside it: keep the tab active in a window that is at
-least partly visible, which works and is what the README recommends, or answer
-the approval through Foundry's own API rather than its DOM, which is a different
-tool from this one. Do not spend another round on the DOM.
+So clicking cannot answer a prompt in a background tab, and that is why
+`answerWithoutARow()` exists.
 
-`allowByText` in the report is what makes that reading safe. It counts buttons
-whose `textContent` matches, which needs no rendering at all, so a row that is
-present but unmatched cannot be mistaken for a row that is absent. `labelFor()`
-falls back to `textContent` for the same reason, and a test covers a button whose
-label is inside a `display:none` child, where `innerText` is empty and the button
-is real.
+**An approval is a state transition inside the page, not a request to a server.**
+What follows a click is the client persisting a thread it already owns:
+`itemsToWrite` carrying assistant messages, tool usages and OpenAI reasoning
+items with `encryptedContent`. A client holding encrypted reasoning state and
+writing the whole document is running the agent loop itself. Posting to
+`/ai-fde/api/threads/{id}/update` from outside would write to the transcript
+without approving anything.
 
-**Pasting the script into the console is not different from injecting it.** This
-comes up because the tool started life as a console paste and seemed to work in
-the background then. Delivery cannot be the reason. Both routes run the identical
-source in the page's own world, and the thing that fails is a property of the
-page: there is no button in the document. What actually changed is session
-length. A short transcript is not windowed, so a new row is in the document as
-soon as React commits it, and a commit needs no frame. Long transcripts are
-windowed, and mounting a row in one needs a measurement that needs a frame. So it
-did work, and it stopped working as sessions got longer, not as the delivery
-changed.
+That is what makes the state route possible rather than closing the last one.
+`world: "MAIN"` already puts this script in the page's own context, and the
+session's store is reachable from the pending pill, which is in the document even
+in a hidden tab. So the answer is written where the click writes it.
 
-The one real difference with DevTools open is that Chrome exempts the page from
-freezing and discarding, which matters for timers rather than for mounting. If
-that is ever in doubt, the way to test it is to leave DevTools open on the tab and
-background it with the extension unchanged: same code, one variable. There is no
-point building a clipboard-paste mode to answer it.
-
-**`window.__autoFde.watchTraffic()`** is the first step of the other route, and
-the only one that needs a real session. It wraps `fetch`, `XMLHttpRequest` and
-`WebSocket.prototype.send`. It logs no headers, deliberately: that is where the
-session token is, and these lines get copied into chat windows. Stop unwraps all
-four, and a test asserts both the log line and the absence of the header.
-
-Three things it learned the hard way, all from one capture against a real
-session:
-
-- **Printing the body is useless.** A Foundry thread body is hundreds of item
-  ids and a tool configuration block, and the field that matters is past any
-  reasonable truncation. So the body is parsed and walked, and only the paths
-  whose key or string value carries the word are reported. A wall of thread
-  document becomes two or three lines.
-- **The word is not enough on its own.** `QuickApprovalProjectQuery`, a
-  repository pull request query with nothing to do with a session, was the
-  loudest thing in the log. Outside the window below, a request has to be on
-  `/ai-fde/api/` as well as carry the word. `watchTraffic({ all: true })` drops
-  both bars for when the grant is named after nothing at all.
-- **The window has to open before the click, not after.** The page sends the
-  grant synchronously from its own click handler, so a window opened in
-  `record()`, which runs after `btn.click()`, has already missed the request it
-  exists to catch. `markApprovalClick()` is called immediately before the click
-  instead, and the marker line in the log is what tells the grant apart from
-  everything else the session was doing at the time.
-
-What the captures showed. The grant is the `POST
-/ai-fde/api/threads/{id}/update` that follows the click, carrying
-`currentVersion` and `itemIdsInOrder`, and it reported `fields: none`: nothing in
-it is named after approval. So searching for the word cannot find the grant, and
-the body has to be read. Read whole it is unreadable, because it leads with
-hundreds of item ids, which is why `describeBody()` reports every top-level key
-with an array of nothing but strings summarised as a count and everything else
-in full.
-
-The shape that makes it a document update with optimistic concurrency is the
-thing to weigh before building on it. Sending one means holding a version the
-server still accepts and an item list that is correct, and getting either wrong
-writes junk into a live session.
-
-**There is no approval to send.** The third capture settles it. What follows a
-click is the client persisting the thread it already owns: `itemsToWrite` full of
-assistant messages, tool usages, and OpenAI reasoning items carrying
-`encryptedContent`. A client holding encrypted reasoning state and writing the
-whole document is a client running the agent loop itself, and an approval in that
-architecture is a state transition inside the page, not a request to a server. So
-posting an `/update` from outside would write to the transcript without approving
-anything, because nothing on the far end is waiting to be told.
-
-The same capture shows the lever that does exist:
+**What a click does, measured.** Three events into the store, in order:
 
 ```
-agentStateModification.sessionState.toolApprovalSettingsOverrides =
-  {"load_skill":{"type":"default","rules":[],"default":{"type":"askUser"}}, ...}
-agentStateModification.sessionState.bulkApprovalSettings =
-  {"create":null,"edit":null,"import":null,"deploy":null,"tag":null,
-   "agentSelf":{"type":"default","rules":[],"default":{"type":"autoApprove"}}}
+removeToolApprovalOverride {toolName}      synchronous, inside the click
+upsertChildContextItem     {contextItem}   the answer
+changeRequestStatus        {requestStatus, agentLocator}
 ```
 
-`askUser` against `autoApprove`, per tool, plus bulk categories that are the ones
-this extension approximates with regexes on prompt text. It is recorded as issue
-#5 and it is not the answer: the settings do not cover every tool and do not
-reliably hold, which is the reason this tool exists. `POLICY_FIELD` in the
-traffic watch prints that object at a longer limit than everything else because
-it is worth reading, not because it is the plan.
+and the item's `toolResponse` goes from `{"state":"pending_approval"}` to
+`{"state":"requested"}`. So `answerWithoutARow()` sets that response on the
+pending item, sends `upsertChildContextItem`, and calls `startAgentLoop`, which is
+what issues the status change itself. Only the response is replaced; everything
+else on the item belongs to the page.
 
-**The state is the route, and this script is already in it.** That an approval is
-a transition inside the page is what makes the third route possible rather than
-closing the last one. `world: "MAIN"` puts this script in the page's own context,
-so the function the button calls is reachable whether or not the button is. And
-the state is mounted in a hidden tab: the pending pill renders from it, which is
-the only reason the pill can be found there at all. What is missing is not access
-but a map.
+**`store.dispatch` is not the door.** It refuses the very event its own reducer
+accepts, with `Unhandled match for value`, and the page has never once been
+observed calling it: every click reaches the reducer through a reference the store
+closed over. What works is running the reducer and handing the store the result as
+an updater, `__setState(current => agent.onEvent(current, event))`, since
+`agent.onEvent(state, event)` is the exact call the page makes. Do not swap that
+for `dispatch`.
 
-`window.__autoFde.probeApproval()` draws it. It walks up React's fiber tree from
-an anchor, preferring an Allow button that carries a fiber, falling back to the
-pill, and reports each component's name, its function props by name, and its
-other props by shape. An anchor with no fiber on it loses to one that has it,
-because the first Allow in the document is not necessarily the mounted one.
+**`DEFAULT_RESPONSE` is a measurement, and it is allowed to rot.** It came from
+reading the item either side of a real click. `noteGrantBefore()` and
+`readGrantAfter()` do that again whenever the panel presses a button, so a session
+on a newer build teaches itself the current answer and stops depending on the
+constant. The item watched is the one the button belongs to, taken off its own
+fibers: with several prompts queued, the first pending item in the map is not
+necessarily the one being answered, and watching the wrong one made this silent
+for a whole run.
 
-Shapes, never contents. Props on a thread component are as likely to be the whole
-conversation as a flag, `JSON.stringify` on a fiber prop finds a cycle sooner or
-later, and this output gets pasted into chat windows. A test asserts a
-`transcript` prop is reported as `array[1]` and that its contents do not appear.
+**`STORE_LEVELS` is 200 and that matters.** The store sits near the root, so a
+short walk finds it from the pill and nothing from a transcript row sixty
+components down. A search capped at a readable printing depth reported that no
+store existed at all.
 
-The two anchors answer different halves. From a mounted Allow button the walk
-reaches the handler the click runs and the props it closes over. From the pill it
-reaches whatever is still mounted in a hidden tab, which is the set actually
-available when it matters. Comparing them is the point: the approval has to be
-driven from something in the second set.
+**The block list reads the tool's name, never its arguments.**
+`update_notepad_dsl` carries an entire notepad document, so a transcript
+mentioning production anywhere refused every notepad write in the session.
+Arguments are content, and content is not intent.
 
-**It runs itself, because the interesting half cannot be reached by hand.** The
-first attempt at this asked for a console command while the tab was hidden, which
-is not a thing anyone can do: typing it means focusing DevTools, and the question
-is what the page looks like when nobody is looking at it. So the probe fires from
-the first Allow the panel presses, before the click since the row unmounts once
-the prompt is answered, and again from the pill when a stall is reported. Once
-each. It is a map, not a running commentary.
+**Nothing is reported as answered that the store did not take.** The item is read
+back after the write, and a mismatch is recorded against that item so it is
+attempted once rather than every second. Half answered is worse than waiting.
 
-**What the first real walk found, from a hidden tab with no row in the
-document.** Forty levels up from the pill, all of it mounted:
+**Every way out of `answerWithoutARow()` says why, once.** It shipped silent, and
+a refusal was then indistinguishable from the whole feature being dead.
 
-- `startAgentLoop`, `abortAgentLoop`, `onEnterSubAgent`, `onExitSubAgent`
-- `lastPersistedAgentState={contextMap, contextOrder, name, agentSystemPrompt,
-  modeConfig, toolConfigurations, modelConfiguration, todoItems, sessionState}`
-- `activeThread`, `loadedThreadInfo={id, name, version, …}`,
-  `lastReadThreadVersionRef`
-- `userBulkApprovalSettings={create, edit, import, deploy, tag, agentSelf}`
-- `initialState={agentStatus, …, requestStatus, sessionState, …}`
-- and at level 7, the pill's own row component reporting `item=undefined`, which
-  is the missing row stated by the page itself
-
-So the thread, the agent state and the loop control are all reachable while
-Chrome is not drawing the tab. What is not there is any way to change them:
-every one of those is a prop, and props are what a component was handed. The
-functions that answer a prompt live in a context value or a hook, which is why
-`stateShapes()` reports both, filtered to shapes whose keys match
-`PROBE_ACTIONS` or `PROBE_INTERESTING`. A provider value is otherwise most of
-the application.
-
-One trap in testing it. Only props whose names match `PROBE_INTERESTING` are
-reported at all, so asserting that the contents of a prop named `transcript` do
-not leak proves nothing: that prop is never printed under any circumstances. The
-tests name it `threadItems` instead, which is reported, and assert it comes out
-as `array[1]` with its contents absent. An assertion about privacy has to be made
-against something the code actually prints.
-
-It is reached from the console rather than the panel because it is not a decision
-anyone makes while using this. Detection is already solved for the API route, as
-it happens: the pending pill is in the document even in a hidden tab, which is how
-`reachPendingPrompt()` knows to run at all. What is missing is what the page sends
-and whether every part of it can be assembled without the row.
-
-**The visibility spoof is what is left of the page's half, and it answers the
-page rather than the browser.** `document.hidden` and `document.visibilityState` are given own
-properties on `document` that report visible, and the going-hidden
-`visibilitychange` is stopped at the window in the capture phase, upstream of
-anything the page has on `document`. Applications defer work by reading those two
-properties and by acting on that event, and this stops Foundry doing so on its own
-account. What it cannot do is make Chrome draw the tab, so it fixes the page's
-half of the problem and not the compositor's. Whether that is enough is a question
-about Foundry that cannot be answered from here, which is why it is a checkbox,
-ticked by default.
+**The visibility spoof answers the page, not the browser.** `document.hidden` and
+`document.visibilityState` are given own properties on `document` that report
+visible, and the going-hidden `visibilitychange` is stopped at the window in the
+capture phase, upstream of anything the page has on `document`. Applications defer
+work by reading those two and by acting on that event, and this stops Foundry
+doing so on its own account. It cannot make Chrome draw the tab, and it was
+measured not to fix the missing row, so do not describe it as what makes a
+background tab work. That is `answerWithoutARow()`.
 
 Three details are load-bearing. The coming-back event is let through, because that
 is the one the page needs in order to catch up on anything it did defer.
@@ -464,11 +357,16 @@ Foundry's own rendering and network activity keep up in the background. It is
 ticked by default, because running unattended in a background tab is the usual
 reason to reach for this at all.
 
-That default needs care. An `AudioContext` created without a user gesture starts
-suspended, and injection by a toolbar press does not give the page one, so a
-ticked box is not proof that any audio is playing. `settleKeepAlive()` calls
-`resume()`, and if the context is still suspended it arms a one-shot
-`pointerdown`/`keydown` listener and retries on the first click or keypress.
+That default needs care. An `AudioContext` created without a user gesture cannot
+start, and Chrome writes its own warning into the page's console saying so, which
+is somebody else's console to be littering. So nothing is built until the page has
+been activated: `navigator.userActivation.hasBeenActive` says whether that has
+already happened, and if it has not, a one-shot `pointerdown`/`keydown` listener
+builds the context on the first click or keypress. `settleKeepAlive()` still calls
+`resume()` and re-arms if the context comes back suspended anyway.
+
+Headless Chromium reports `hasBeenActive` as true from the start, so the suite
+covers the waiting path by stubbing `navigator.userActivation`.
 
 Neither setting carries a status field in the panel: each hint says what the
 setting does, not what it is currently doing. `reportKeepAlive()` and
@@ -578,6 +476,14 @@ Kept because each one is a trap that is easy to reintroduce.
   `console.warn`, which arrives collapsed, so the one fact worth having came
   back quoted as "Object". Diagnostics that have to survive being copied out of
   somebody else's console are flat text.
+- **Foundry's own tool approval settings are not the answer.** The session
+  metadata carries `toolApprovalSettingsOverrides` and `bulkApprovalSettings`
+  with `askUser` against `autoApprove` per tool, which looks like it removes the
+  problem entirely. It does not cover every tool and does not reliably hold,
+  which is why this exists. Recorded as issue #5.
+- **A block list matched against tool arguments blocks almost everything.**
+  `update_notepad_dsl` carries the notepad, so one mention of production in a
+  transcript refused every notepad write for the rest of the session.
 - **The name.** It shipped as `AI FDE AutoAllow` in an `ai-fde-autoallow`
   folder. Renaming to `Auto FDE` changed the folder, which changes the extension
   ID that Chrome derives from an unpacked path, which means the configured base

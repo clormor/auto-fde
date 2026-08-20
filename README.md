@@ -48,51 +48,46 @@ collapsed state are remembered. Pause and stop are icons in the title bar, so
 they still work when the panel is collapsed down to a single bar with the
 chevron. Paused shows an amber play icon, running shows a green pause icon.
 
-Three settings sit below the categories:
+Two settings sit below the categories:
 
 - **Keep the tab awake**, on by default. Inaudible audio marks the tab as
-  audible, which stops Chrome throttling its timers and stops the tab being
-  frozen or discarded on a long session. Chrome will not let a page start audio
-  until somebody touches it, so click anywhere in the tab once.
-- **Automatically resume after a network error**, on by default, since a
-  dropped connection is what actually ends an unattended session. Once the
-  connection has been back for a couple of seconds it types one line into the
-  chat telling the agent to carry on, and sends it. Every send is in the panel's
-  log. Untick it if you would rather nothing was said on your behalf.
-- **Tell the page the tab is visible**, on by default. Foundry is told the tab is
-  in front even when it is not, so it does not defer its own work while you are
-  elsewhere. It does not make a background tab work, for the reason in the next
-  section. Untick it if anything about the session behaves oddly.
+  audible, which stops Chrome throttling its timers and stops a long session
+  being frozen or discarded. Chrome will not let a page start audio until
+  somebody touches it, so click anywhere in the tab once.
+- **Automatically resume after a network error**, on by default, since a dropped
+  connection is what actually ends an unattended session. Once the connection has
+  been back for a couple of seconds it types one line into the chat telling the
+  agent to carry on, and sends it. Every send is in the log. Untick it if you
+  would rather nothing was said on your behalf.
 
 If a prompt arrives while you are scrolled up the transcript, the panel scrolls
-you to the bottom to reach it. Foundry only keeps the part of a long session you
-are looking at on the page, so there is no other way to press a button that is
-not there. If it cannot get to one it keeps trying, more slowly, and says so in
-the log.
+you to the bottom to reach it, because Foundry only keeps the part of a long
+session you are looking at on the page.
 
 **Stop** shuts it down, and so does reloading the page. Press the toolbar button
 again to start it back up.
 
-## Keep the session in front of you
+## Working in another tab
 
-**A background tab does not work, and cannot be made to.** Chrome stops drawing a
-tab you are not looking at, and Foundry does not add the message to a page it is
-not drawing, so the prompt arrives with no button on the page for anything to
-press. That has been measured rather than guessed: in a background tab there are
-dozens of buttons in the page and not one of them is an approval. No extension
-can reach a button that is not there. The panel keeps checking, and it presses the
-prompt within a second of your coming back to the tab, but while you are away
-nothing happens.
+It just works, and this is the part worth understanding.
 
-What does work is keeping the session in its own window and leaving any sliver of
-it uncovered, then working in another app. Chrome keeps drawing a window you can
-see even when it is not the one you are typing in, so the session keeps running
-and prompts get pressed while you are elsewhere. A window fully hidden behind
-another window counts as not visible, so leave an edge of it showing.
+Chrome stops drawing a tab you are not looking at, and Foundry will not add a row
+to a page it is not drawing, so a prompt that arrives while you are elsewhere has
+no button anywhere on the page. Nothing that clicks buttons can answer it.
 
-Clicking once in the tab after you open the panel is worth doing whatever you
-choose, since that is what lets the keep-alive start. The log says so if it has
-not.
+So the panel does not click one. The pending approval is in the session's own
+state the whole time, and that is where the answer is written, exactly as pressing
+Allow writes it, followed by the same start of the agent loop the button triggers.
+That works in a background tab, behind another window, on another desktop. The log
+shows those with `no row` after the category.
+
+Two things still apply. The block list is checked against the tool's name, so
+anything mentioning deleting, forcing or production is refused and says so in the
+log. And an answer the session does not accept is reported rather than retried,
+because a half-answered prompt is worse than a waiting one.
+
+Clicking once in the tab after you open the panel is still worth doing, since
+that is what lets the keep-alive start. The log says so if it has not.
 
 ## If nothing happens
 
@@ -110,16 +105,10 @@ DevTools console, and neither does anything this extension logs: that goes to
 the **service worker** console, reached by the link of that name on the same
 card.
 
-**A prompt sitting unanswered.** If the tab is in the background, see the section
-above: that is expected and switching to the tab settles it within a second. In
-the tab, the panel goes and gets prompts that are off screen, so it should be
-rare; when it cannot, the log reads `off-screen prompt still out of reach`. A prompt that stays put once it is in front of you is a different
-thing: that one is being refused, either because its category is unticked or
-because the prompt mentions deleting, forcing or production.
-
-**`click the page once to keep the tab awake` in the log.** Chrome will not let a
-page start audio until somebody touches it, and the keep-alive is that audio, so
-until you click anywhere in the tab Chrome throttles it. Click once and the line
-stops appearing.
+**A prompt sitting unanswered.** Look in the console, filtered to `Auto FDE`.
+A line reading `no-button answer declined: …` says exactly which check stopped
+it, and `the session would not take the answer` means the write was rejected. A
+prompt that stays put with nothing in the log is being refused by the block list
+or by an unticked category.
 
 Anything beyond that is in [DEVELOPER.md](DEVELOPER.md).

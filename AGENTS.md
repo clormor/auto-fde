@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             83 assertions
+npm run test:browser                             78 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -71,40 +71,49 @@ and no `dist/`.
   sitting on an approval mutates nothing, so the observer never fires and the
   backstop timer is throttled to once a minute. The `visibilitychange` listener
   scans immediately and resets the jump budget. Do not remove it.
-- **A hidden tab cannot be made to work, and this is settled.** Measured with
-  the spoof on, from a background tab: `visibility=hidden buttons=77
-  allow=[none] allowByText=0`. Foundry does not mount the row while Chrome is
-  not drawing the tab, and no button in the document means nothing to press. The
-  answer is a visible window, which the README says, or Foundry's own API, which
-  is a different tool. Do not spend another round on the DOM.
-- **A console paste and an injection are the same thing.** Identical source, same
-  world. If background behaviour differs between them the reason is elsewhere,
-  usually session length: a short transcript is not windowed, so a row is in the
-  document as soon as React commits it, and a commit needs no frame. Do not add a
-  clipboard mode to chase this.
-- **`watchTraffic()` logs no headers.** It is the capture step for sending an
-  approval rather than clicking one, reached from the console as
-  `window.__autoFde.watchTraffic()`, and its output gets pasted into chat
-  windows. Headers never. Stop unwraps `fetch`, `XMLHttpRequest` and
-  `WebSocket.prototype.send`.
-- **`probeApproval()` reports shapes, never contents.** It walks React fibers
-  from an Allow button or the pending pill and names components and function
-  props. Props on a thread component hold the conversation, fiber props are
-  cyclic, and the output gets pasted into chat windows. Do not start printing
-  prop values.
-- **It reports fields, not bodies, and the click window opens before the
-  click.** A thread body buries the field that matters past any truncation, so
-  the body is walked and only matching paths are printed. The page sends the
-  grant synchronously from its own click handler, so `markApprovalClick()` runs
-  immediately before `btn.click()`; moving it into `record()` puts it after the
-  click and misses the request.
+- **A prompt in a hidden tab has no button, and clicking cannot answer it.**
+  Chrome draws no frames for a tab nobody is looking at, so the windowed
+  transcript never mounts the row. Measured repeatedly:
+  `visibility=hidden buttons=110 allow=[none] allowByText=0`. Anything that only
+  looks at `document.querySelectorAll` is dead in that state.
+- **`answerWithoutARow()` is the feature, not a fallback.** The pending item is in
+  the session's store throughout, reachable from the pending pill, so the answer
+  is written there: `toolResponse` set to `{state: "requested"}`,
+  `upsertChildContextItem` sent, `startAgentLoop` called. That is what a click
+  does, measured from a live session.
+- **Write through the reducer, never `store.dispatch`.** dispatch refuses the very
+  event the reducer accepts, with `Unhandled match for value`; the page reaches the
+  reducer through a closed-over reference. Use
+  `__setState(current => agent.onEvent(current, event))`.
+- **`STORE_LEVELS` is 200 because a transcript row sits some sixty components
+  below the store.** A walk short enough to be worth printing finds the store from
+  the pill and nothing from anywhere else, then reports that no store exists.
+- **Only the response is rewritten.** Everything else on a context item belongs to
+  the page; rewriting any of it rewrites somebody's transcript.
+- **Nothing is reported as answered that the store did not take**, and a rejected
+  write is recorded against that item rather than retried every second.
+- **The block list reads the tool's name, never its arguments.** Arguments are
+  content: `update_notepad_dsl` carries a whole notepad, so one mention of
+  production refused every notepad write in the session.
+- **Every refusal says why, once.** Silence made a refused prompt look identical to
+  the whole feature being dead, twice.
+- **Foundry's own approval settings are not a substitute.** They do not cover every
+  tool and do not reliably hold. Issue #5.
 - **The visibility spoof answers the page, not the browser.** `document.hidden`
   and `document.visibilityState` report visible and the going-hidden event is
-  stopped at the window in the capture phase, so the page does not stand down of
-  its own accord. It cannot make Chrome draw the tab, so do not describe it as
-  fixing background operation. Let the coming-back event through, keep
-  `realVisibility()` reading the truth off the prototype for the script's own
-  decisions and diagnostics, and undo the properties on Stop.
+  stopped at the window in the capture phase, so the page does not defer its own
+  work. It cannot make Chrome draw the tab and was measured not to fix the missing
+  row, so do not describe it as what makes a background tab work. Let the
+  coming-back event through, keep `realVisibility()` reading the truth off the
+  prototype, and undo the properties on Stop.
+- **Build no AudioContext before the page is activated.** One created without a
+  gesture cannot start and makes Chrome log its own warning into the page's
+  console. Check `navigator.userActivation.hasBeenActive`, otherwise wait for the
+  first `pointerdown` or `keydown`.
+- **Neither of those two is a setting.** Answering a prompt with no button is the
+  job, and telling the page it is in front is not a preference. A checkbox earns
+  its place only where the answer could reasonably be no, which is why the
+  keep-alive and auto-resume have one and these do not.
 - **The panel lives in a shadow root** (`#af-host`), in the system font, grouped
   into captioned sections by what each control decides. Do not move controls
   between those groups: keeping the tab awake is not a decision about which

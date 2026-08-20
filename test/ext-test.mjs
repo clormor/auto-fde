@@ -94,11 +94,6 @@ const WINDOWED_PAGE = `<!doctype html><html><body style="margin:0">
     const b = document.createElement('button');
     b.id = 'offscreen';
     b.textContent = 'Allow';
-    b['__reactFiber$mock'] = {
-      type: { name: 'ToolApprovalRow' },
-      memoizedProps: { onApprove: () => {}, itemId: 'item-1' },
-      return: null,
-    };
     row.appendChild(b);
     box.appendChild(row);
     document.getElementById('pill').remove();
@@ -165,30 +160,65 @@ const DEAD_PILL_PAGE = `<!doctype html><html><body>
     if (e.target.tagName === 'BUTTON' && e.target.id) window.__hits.push(e.target.id);
   }, true);
 
-  // What is still mounted when the row is not. The pill is the only anchor left
-  // in a hidden tab, so the probe has to reach the thread state through it.
-  document.getElementById('deadpill')['__reactFiber$mock'] = {
+</script>
+</body></html>`;
+
+// The state of a hidden tab, as measured: a pending pill, no row, no button, and
+// the pending item sitting in a store that is still reachable. The one shape
+// where answering has to happen without anything to press.
+const STATE_PAGE = `<!doctype html><html><body>
+<div>transcript</div>
+<div id="pill">243 Waiting for tool approval</div>
+
+<script>
+  window.__events = [];
+  window.__loops = 0;
+  let state = {
+    contextMap: {
+      'item-7': {
+        id: 'item-7',
+        type: 'tool-usage',
+        toolName: 'container_transform_preview',
+        toolRequest: { branch: 'main' },
+        toolResponse: { state: 'pending_approval' },
+      },
+    },
+  };
+  // The store's shape as measured: a reducer taking (state, event) and returning
+  // the next state, and __setState taking an updater. dispatch is deliberately
+  // absent, because the real one refuses the event its own reducer accepts.
+  const store = {
+    getSnapshot: () => state,
+    subscribe: () => {},
+    __setState: updater => { state = updater(state); },
+    agent: {
+      onEvent: (current, event) => {
+        window.__events.push(event);
+        const next = JSON.parse(JSON.stringify(current));
+        next.contextMap[event.contextItem.id].toolResponse = event.contextItem.toolResponse;
+        return next;
+      },
+    },
+  };
+  document.getElementById('pill')['__reactFiber$mock'] = {
     type: { name: 'PendingApprovalPill' },
-    memoizedProps: { onJumpToItem: () => {}, pendingItemId: 'item-9' },
+    memoizedProps: {},
     return: {
-      type: { displayName: 'ThreadStateProvider' },
-      memoizedProps: { approveToolCall: () => {}, threadItems: ['the whole session'] },
+      type: { name: 'AgentLoopHost' },
+      memoizedProps: { startAgentLoop: () => { window.__loops++; } },
       return: {
-        // What props cannot show: a context provider's value, and a hook holding
-        // a store. The functions that answer a prompt live in these, not in
-        // props, which is what the first real walk established.
-        type: { displayName: 'AgentStateContext.Provider' },
-        memoizedProps: { value: { respondToToolCall: () => {}, contextMap: {} } },
-        memoizedState: {
-          memoizedState: { pendingApproval: { id: 'item-9' }, dispatch: () => {} },
-          next: { memoizedState: { unrelated: 'skipped' }, next: null },
-        },
+        type: { displayName: 'AgentStoreProvider' },
+        memoizedProps: { value: store },
         return: null,
       },
     },
   };
 </script>
 </body></html>`;
+
+const STATE_BLOCKED_PAGE = STATE_PAGE
+  .replace("toolName: 'container_transform_preview'", "toolName: 'delete_dataset'")
+  .replace("toolRequest: { branch: 'main' }", "toolRequest: { dataset: 'production-events' }");
 
 const results = [];
 const check = (name, pass, detail = '') => {
@@ -331,7 +361,9 @@ check('the panel is translucent and blurs what is behind it', await p1.evaluate(
 // The keep-alive is on by default, so the audio has to actually stop when it is
 // turned off. A suspended context is fine; a running one that nobody can reach
 // is a tab quietly playing audio for ever.
-check('the keep-alive really did open an audio context',
+// Headless reports userActivation.hasBeenActive as true from the start, so this
+// is the already-activated path. The waiting path is p14.
+check('the keep-alive opens an audio context on an activated page',
   (await p1.evaluate(() => window.__ctxs.length)) >= 1);
 
 await p1.evaluate(() => document.getElementById('af-host').shadowRoot
@@ -554,156 +586,6 @@ check('a banner still on screen does not send a second resume message',
   sendsLater === sendsAfter, `sends=${sendsLater - sendsAfter}`);
 
 // ---------------------------------------------------------------------------
-// The state probe. An approval is a state transition inside the page, so the
-// function the button calls is reachable from here whether or not the button is.
-// This walks up React's fiber tree from whatever anchor exists and reports
-// component names, function props by name, and other props by shape. Shapes
-// only: props on a thread component hold the conversation.
-// ---------------------------------------------------------------------------
-const probed = [];
-const collectProbe = msg => probed.push(msg.text());
-p1.on('console', collectProbe);
-await p1.evaluate(() => {
-  const row = document.createElement('div');
-  row.setAttribute('role', 'dialog');
-  row.innerHTML = '<p>Agent wants to read the probed record.</p>';
-  const b = document.createElement('button');
-  b.id = 'probed';
-  b.textContent = 'Allow';
-  // Disabled, so the scan counts it as a prompt it can see and leaves it alone
-  // rather than clicking the anchor out from under the probe.
-  b.disabled = true;
-  row.appendChild(b);
-  document.body.appendChild(row);
-
-  // React's own shape, as far as the probe is concerned: a fiber on the element
-  // and a return chain above it. The conversation is in there to be left out.
-  const store = {
-    type: { displayName: 'ThreadStateProvider' },
-    memoizedProps: {
-      approveToolCall: () => {},
-      pendingToolCall: { id: 'tc-1', state: 'pending_approval' },
-      threadItems: ['every message in the session'],
-      unrelated: 'ignored',
-    },
-    return: null,
-  };
-  b[`__reactFiber$${Math.random().toString(36).slice(2)}`] = {
-    type: { name: 'ToolApprovalRow' },
-    memoizedProps: { onApprove: () => {}, itemId: 'item-1' },
-    return: store,
-  };
-});
-await p1.waitForTimeout(300);
-await p1.evaluate(() => window.__autoFde.probeApproval());
-await p1.waitForTimeout(200);
-p1.off('console', collectProbe);
-
-const probe = probed.find(t => t.startsWith('[Auto FDE] probe:'));
-check('the probe walks up from the button and names the handlers it finds',
-  !!probe && probe.includes('ToolApprovalRow') && probe.includes('fns: onApprove')
-    && probe.includes('ThreadStateProvider') && probe.includes('fns: approveToolCall'),
-  JSON.stringify(probe || null));
-check('the probe reports shapes, so a thread prop cannot leak the session',
-  !!probe && probe.includes('pendingToolCall={id, state}')
-    && probe.includes('threadItems=array[1]')
-    && !probe.includes('every message in the session'),
-  JSON.stringify(probe || null));
-
-// ---------------------------------------------------------------------------
-// The traffic watch. It is reached from the console rather than the panel,
-// because it is a step in working out whether an approval can be sent instead of
-// clicked, not a decision anyone makes while using this. It must log the request
-// going out and it must never log a header, which is where the session token is.
-// ---------------------------------------------------------------------------
-const seen = [];
-const collect = msg => seen.push(msg.text());
-p1.on('console', collect);
-await p1.evaluate(async () => {
-  window.__autoFde.watchTraffic();
-  // A body shaped like the real thing: the field that matters is a long way past
-  // any sane truncation, under an id, among several hundred siblings.
-  const items = {};
-  for (let i = 0; i < 200; i++) items[`item-${i}`] = { kind: 'message', text: 'x'.repeat(40) };
-  items['item-200'] = { kind: 'toolCall', approvalState: 'APPROVED' };
-  await fetch('/ai-fde/api/threads/t1/update', {
-    method: 'POST',
-    headers: { authorization: 'Bearer do-not-log-me' },
-    body: JSON.stringify({ currentVersion: 'v1', items }),
-  });
-  // Same shape, same fields, sent again. One line, not two.
-  await fetch('/ai-fde/api/threads/t1/update', {
-    method: 'POST',
-    body: JSON.stringify({ currentVersion: 'v2', items }),
-  });
-  // On the session's API but says nothing about approval, and a query named
-  // after approval that has nothing to do with this session.
-  await fetch('/ai-fde/api/threads/t1/noise', { method: 'POST', body: '{"noise":true}' });
-  await fetch('/graphql-gateway/api/bulk?q=QuickApprovalProjectQuery', {
-    method: 'POST', body: '{"unrelated":true}' });
-});
-await p1.waitForTimeout(300);
-p1.off('console', collect);
-
-const traffic = seen.filter(t => t.startsWith('[Auto FDE] traffic: '));
-check('the traffic watch reports the field an approval sets, not the body around it',
-  traffic.length === 1
-    && traffic[0].includes('items.item-200.approvalState = "APPROVED"'),
-  JSON.stringify(traffic));
-check('a request that says nothing new is not logged twice',
-  traffic.filter(t => t.includes('/update')).length === 1);
-check('a query named after approval elsewhere in Foundry is not logged',
-  !traffic.some(t => t.includes('QuickApprovalProjectQuery')));
-check('the traffic watch logs no headers, so no session token',
-  !seen.some(t => t.includes('do-not-log-me')));
-
-// Which request grants the approval is worth more than its name, and the one
-// that follows the click is the one.
-const afterClick = [];
-const collectClick = msg => afterClick.push(msg.text());
-p1.on('console', collectClick);
-await p1.evaluate(() => {
-  const row = document.createElement('div');
-  row.setAttribute('role', 'dialog');
-  row.innerHTML = '<p>Agent wants to read the traffic record.</p>';
-  const b = document.createElement('button');
-  b.id = 'traffic-allow';
-  b.textContent = 'Allow';
-  b.addEventListener('click', () => {
-    // Shaped like the real grant: no approval word anywhere, the item order
-    // first and long enough to bury anything after it, and the part that matters
-    // in a key of its own. Found only because it followed the click.
-    const ids = Array.from({ length: 300 }, (unused, i) => `item-${i}`);
-    fetch('/ai-fde/api/threads/t1/update', {
-      method: 'POST',
-      body: JSON.stringify({
-        currentVersion: 'v9',
-        itemIdsInOrder: ids,
-        upsertedItems: { 'item-9': { kind: 'toolCall', userDecision: 'ACCEPTED' } },
-      }),
-    });
-    // In the window but not the session's API, so it stays out of the log.
-    fetch('/graphql-gateway/api/bulk?q=LoadDatasetQuery', { method: 'POST', body: '{}' });
-  });
-  row.appendChild(b);
-  document.body.appendChild(row);
-});
-await p1.waitForTimeout(600);
-p1.off('console', collectClick);
-const grant = afterClick.filter(t => t.startsWith('[Auto FDE] traffic: fetch'));
-check('the log marks the click, so the request that grants it can be told apart',
-  afterClick.some(t => t.includes('Allow clicked, what follows is the grant'))
-    && grant.length === 1 && grant[0].includes('/threads/t1/update'),
-  JSON.stringify(grant));
-// The whole point: the grant names no field after approval, so the body has to
-// be readable without being printed whole.
-check('the item order is summarised and the rest of the grant is shown in full',
-  grant[0] && grant[0].includes('itemIdsInOrder: 300 strings')
-    && grant[0].includes('"userDecision":"ACCEPTED"'),
-  JSON.stringify(grant[0] || null));
-
-
-// ---------------------------------------------------------------------------
 // The header is the drag handle and the transport controls sit inside it, so a
 // press on one of those must not drag the panel out from under the pointer.
 // ---------------------------------------------------------------------------
@@ -750,10 +632,6 @@ check('re-injecting does not stack a second panel',
 await press(p1, '#af-stop');
 check('stop removes the panel and the handle',
   await p1.evaluate(() => !document.getElementById('af-host') && !window.__autoFde));
-// A wrapped fetch left behind on a page whose panel has been removed is the same
-// class of leak as a listener left on window.
-check('stop unwraps the traffic watch',
-  await p1.evaluate(() => !/traffic/.test(window.fetch.toString())));
 // Stop can be followed by another press of the toolbar button on the same page,
 // so a listener left on window is a leak that compounds.
 const leftOnWindow = await p1.evaluate(() =>
@@ -804,21 +682,8 @@ const MAX_JUMPS = 5;
 const JUMP_INTERVAL_MS = 1500;
 
 const p6 = await mockPage(browser, SESSION_URL, undefined, WINDOWED_PAGE);
-const probedClick = [];
-const collectClickProbe = msg => probedClick.push(msg.text());
-p6.on('console', collectClickProbe);
 await p6.evaluate(SCRIPT);
 await p6.waitForTimeout(600);
-p6.off('console', collectClickProbe);
-// A console command cannot be timed against a hidden tab, so the probe runs
-// itself: once from the first Allow this panel presses, which is the mounted
-// case, and once from the pill on a stall, which is the case that matters.
-const clickProbe = probedClick.filter(t => t.startsWith('[Auto FDE] probe:'));
-check('the first press probes the state without being asked',
-  clickProbe.length === 1
-    && clickProbe[0].includes('the Allow button being pressed')
-    && clickProbe[0].includes('fns: onApprove'),
-  JSON.stringify(clickProbe));
 check('a prompt the list had not rendered is reached and approved',
   (await p6.evaluate(() => window.__hits)).includes('offscreen'),
   JSON.stringify(await p6.evaluate(() => window.__hits)));
@@ -856,40 +721,16 @@ const deadPillPresses = page => page.evaluate(() =>
   window.__hits.filter(h => h === 'deadpill').length);
 
 const p9 = await mockPage(browser, SESSION_URL, undefined, DEAD_PILL_PAGE);
-const probedStall = [];
-const collectStallProbe = msg => probedStall.push(msg.text());
-p9.on('console', collectStallProbe);
 await p9.evaluate(SCRIPT);
 await p9.evaluate(() => {
   window.__nudge = setInterval(() => document.body.appendChild(document.createElement('span')), 100);
 });
 await p9.waitForTimeout(JUMP_INTERVAL_MS * (MAX_JUMPS + 1) + 800);
-p9.off('console', collectStallProbe);
 const deadPresses = await deadPillPresses(p9);
 check(`a pill that leads nowhere is tried ${MAX_JUMPS} times and then slowed down`,
   deadPresses === MAX_JUMPS, `presses=${deadPresses}`);
 check('a prompt still out of reach is reported in the log',
   (await text(p9, '#af-log')).includes('off-screen prompt still out of reach'));
-
-// The half that matters and the half nobody can be at the console for: what is
-// still mounted while the row is not.
-const stallProbe = probedStall.filter(t => t.startsWith('[Auto FDE] probe:'));
-check('a stall probes the state through the pill on its own',
-  stallProbe.length === 1
-    && stallProbe[0].includes('no row in the document')
-    && stallProbe[0].includes('PendingApprovalPill')
-    && stallProbe[0].includes('fns: approveToolCall'),
-  JSON.stringify(stallProbe));
-check('the stall probe reports a thread prop by shape and not by content',
-  stallProbe[0] && stallProbe[0].includes('threadItems=array[1]')
-    && !stallProbe[0].includes('the whole session'),
-  JSON.stringify(stallProbe[0] || null));
-// The setter is the thing being looked for, and props never carry it.
-check('the probe reaches into context values and hooks, where the setters are',
-  stallProbe[0] && stallProbe[0].includes('value: {respondToToolCall, contextMap}')
-    && stallProbe[0].includes('hook 0: {pendingApproval, dispatch}')
-    && !stallProbe[0].includes('unrelated'),
-  JSON.stringify(stallProbe[0] || null));
 
 // Being looked at is the one event that changes whether a jump can work, because
 // Chrome starts producing frames again. It is also the only one the script can be
@@ -971,12 +812,79 @@ check('the page is told when the tab comes back',
   (await p11.evaluate(() => window.__pageHeard.length)) === 1,
   JSON.stringify(await p11.evaluate(() => window.__pageHeard)));
 
-await press(p11, '#af-visible');
+// A page left reading its visibility off a panel that has been removed is worse
+// than either answer, so Stop hands the truth back.
+await press(p11, '#af-stop');
 await goHidden();
-check('unticking hands the page its real visibility back',
+check('stop hands the page its real visibility back',
   await p11.evaluate(() => document.visibilityState === 'hidden' && document.hidden === true));
-check('and the page hears the event again once it is unticked',
-  (await p11.evaluate(() => window.__pageHeard.length)) === 2);
+
+// ---------------------------------------------------------------------------
+// Answering a prompt with no button. This is the only path that reaches a prompt
+// in a background tab, because there the row is never in the document: measured
+// three times over as visibility=hidden, allow=[none], allowByText=0, with the
+// pending item present in the store the whole time.
+// ---------------------------------------------------------------------------
+const p12 = await mockPage(browser, SESSION_URL, undefined, STATE_PAGE);
+await p12.evaluate(SCRIPT);
+await p12.waitForTimeout(600);
+// Answering a prompt with no button is the job, not a preference, so there is no
+// switch for it and none for telling the page it is in front either.
+check('neither behaviour is behind a checkbox',
+  await p12.evaluate(() => {
+    const root = document.getElementById('af-host').shadowRoot;
+    return !root.querySelector('#af-state') && !root.querySelector('#af-visible')
+      && root.querySelectorAll('#af-keepalive, #af-resume-toggle').length === 2;
+  }));
+const stateEvents = await p12.evaluate(() => window.__events);
+check('a prompt with no button is answered in the session state',
+  stateEvents.length === 1
+    && stateEvents[0].type === 'upsertChildContextItem'
+    && stateEvents[0].contextItem.id === 'item-7'
+    && JSON.stringify(stateEvents[0].contextItem.toolResponse) === '{"state":"requested"}',
+  JSON.stringify(stateEvents));
+// A click sends changeRequestStatus after the upsert, and that is what
+// startAgentLoop does, so the loop is started rather than the status forged.
+check('the agent loop is started, not the request status forged',
+  (await p12.evaluate(() => window.__loops)) === 1);
+check('only the response is rewritten, never the rest of the item',
+  stateEvents[0] && stateEvents[0].contextItem.toolName === 'container_transform_preview'
+    && stateEvents[0].contextItem.toolRequest.branch === 'main');
+check('an answer with no button is counted and logged like any other',
+  (await text(p12, '#af-count')) === '1'
+    && (await text(p12, '#af-log')).includes('no row'));
+
+const p13 = await mockPage(browser, SESSION_URL, undefined, STATE_BLOCKED_PAGE);
+await p13.evaluate(SCRIPT);
+await p13.waitForTimeout(600);
+check('a prompt the block list refuses is refused here too',
+  (await p13.evaluate(() => window.__events)).length === 0
+    && (await text(p13, '#af-log')).includes('refused delete_dataset'),
+  await text(p13, '#af-log'));
+
+// ---------------------------------------------------------------------------
+// An AudioContext built before the page has been activated cannot start, and
+// Chrome writes its own warning into the page's console saying so. So nothing is
+// built until there has been a gesture, and the panel says it is waiting.
+// ---------------------------------------------------------------------------
+const p14 = await mockPage(browser, SESSION_URL);
+await p14.evaluate(() => {
+  Object.defineProperty(navigator, 'userActivation', {
+    get: () => ({ hasBeenActive: false, isActive: false }),
+    configurable: true,
+  });
+});
+await p14.evaluate(SCRIPT);
+await p14.waitForTimeout(300);
+check('no audio context is built before the page has been activated',
+  (await p14.evaluate(() => window.__ctxs.length)) === 0);
+check('and the panel says what it is waiting for',
+  (await text(p14, '#af-log')).includes('click the page once to keep the tab awake'));
+
+await p14.evaluate(() => window.dispatchEvent(new Event('pointerdown')));
+await p14.waitForTimeout(300);
+check('the first gesture is what builds it',
+  (await p14.evaluate(() => window.__ctxs.length)) === 1);
 
 await browser.close();
 
