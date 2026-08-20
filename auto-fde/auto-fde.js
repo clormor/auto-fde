@@ -84,7 +84,7 @@
 
   function armGesture() {
     if (!keepAliveOn) return;
-    reportKeepAlive('starts on your next click');
+    reportKeepAlive('waiting for a click on the page');
     if (awaitingGesture) return;
     awaitingGesture = true;
     const onGesture = () => {
@@ -177,12 +177,13 @@
   async function handleErrorBanner() {
     if (recovering || !autoResumeEnabled) return;
     recovering = true;
-    updateResumeStatus('Recovering…', '#facc15');
+    reportResume('recovering');
     const stable = await waitForStableConnection();
-    if (!recovering) { updateResumeStatus(autoResumeEnabled ? 'Watching' : 'OFF', autoResumeEnabled ? '#4ade80' : '#888'); return; }
+    if (!recovering) { reportResume(autoResumeEnabled ? 'watching' : 'off'); return; }
     if (stable) {
       const ok = sendResumeMessage();
-      updateResumeStatus(ok ? 'Watching' : 'Failed to send', ok ? '#4ade80' : '#f87171');
+      if (ok) reportResume('watching');
+      else reportResume('could not send the resume message', true);
     }
     recovering = false;
   }
@@ -347,14 +348,12 @@
             <input type="checkbox" id="af-keepalive" checked>
             <span>Keep the tab awake</span>
           </label>
-          <div class="hint">Inaudible audio stops Chrome throttling this tab.
-            <b id="af-keepalive-status">Off</b></div>
+          <div class="hint">Inaudible audio stops Chrome throttling this tab.</div>
           <label class="row" style="margin-top:5px">
             <input type="checkbox" id="af-resume-toggle">
             <span>Automatically resume after a network error</span>
           </label>
-          <div class="hint">Resends the last message once the connection is back.
-            <b id="af-resume-status">Off</b></div>
+          <div class="hint">Resends the last message once the connection is back.</div>
         </div>
 
         <div class="sec">
@@ -370,7 +369,6 @@
   const catsEl = shadow.querySelector('#af-cats');
   const countEl = shadow.querySelector('#af-count');
   const logEl = shadow.querySelector('#af-log');
-  const resumeStatusEl = shadow.querySelector('#af-resume-status');
   const toggleBtn = shadow.querySelector('#af-toggle');
   const stopBtn = shadow.querySelector('#af-stop');
   const collapseBtn = shadow.querySelector('#af-collapse');
@@ -392,8 +390,10 @@
     catsEl.appendChild(row);
   });
 
-  const keepAliveStatusEl = shadow.querySelector('#af-keepalive-status');
-  function reportKeepAlive(text) { keepAliveStatusEl.textContent = text; }
+  // Neither of the settings carries a status field any more: the panel assumes
+  // they work, which they do. The state still goes to the console, because
+  // "ticked but suspended" is a real thing to be able to check.
+  function reportKeepAlive(text) { console.log(`[Auto FDE] keep the tab awake: ${text}`); }
 
   const keepAliveBox = shadow.querySelector('#af-keepalive');
   keepAliveBox.onchange = e => {
@@ -401,14 +401,16 @@
   };
   if (keepAliveBox.checked) startKeepAlive();
 
-  function updateResumeStatus(text, color) {
-    resumeStatusEl.textContent = text;
-    resumeStatusEl.style.color = color;
+  // A failure is the one thing that cannot be assumed away, so it goes in the
+  // activity log, where the user is already looking, rather than nowhere.
+  function reportResume(text, failed = false) {
+    console.log(`[Auto FDE] auto-resume: ${text}`);
+    if (failed) appendLog(new Date().toLocaleTimeString(), text);
   }
 
   shadow.querySelector('#af-resume-toggle').onchange = e => {
     autoResumeEnabled = e.target.checked;
-    updateResumeStatus(autoResumeEnabled ? 'Watching' : 'Off', autoResumeEnabled ? '#4ade80' : '#7d8593');
+    reportResume(autoResumeEnabled ? 'watching' : 'off');
     if (!autoResumeEnabled) recovering = false;
   };
 

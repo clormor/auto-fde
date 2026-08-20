@@ -177,7 +177,15 @@ await p1.waitForTimeout(500);
 check('unticking the keep-alive closes every audio context it opened',
   await p1.evaluate(() => window.__ctxs.every(c => c.state === 'closed')),
   JSON.stringify(await p1.evaluate(() => window.__ctxs.map(c => c.state))));
-check('and the panel says so', (await text(p1, '#af-keepalive-status')) === 'Off');
+// Neither setting carries a status field: the panel assumes they work, and the
+// hint says what the setting does rather than what it is currently doing.
+check('the settings carry no status readout',
+  !(await has(p1, '#af-keepalive-status')) && !(await has(p1, '#af-resume-status')));
+check('the keep-alive hint ends after the sentence',
+  (await text(p1, '#af-keepalive')).length === 0
+    && (await p1.evaluate(() => document.getElementById('af-host').shadowRoot
+      .querySelector('#af-keepalive').closest('.sec').querySelector('.hint').textContent.trim()))
+      === 'Inaudible audio stops Chrome throttling this tab.');
 
 // Keeping the tab awake is not a decision about which prompts to allow, so it
 // must not sit in the same group as the prompt categories.

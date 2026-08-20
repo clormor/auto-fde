@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             43 assertions
+npm run test:browser                             44 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -64,10 +64,9 @@ package and no `dist/`.
 - **The mark lives in one place**, the inline SVG in `auto-fde.js`. The toolbar
   PNGs are generated from it with `npm run icons`; never hand-edit them, and
   re-run it after changing the mark.
-- **Never let a control claim a state it is not in.** The keep-alive box is
-  ticked by default, but an `AudioContext` starts suspended without a user
-  gesture, so the panel reports `starts on your next click` until it is really
-  running.
+- **Settings hints say what a setting does, not what it is doing.** There are no
+  status readouts in the panel; state goes to the console. A genuine failure,
+  such as a resume that could not be sent, goes in the activity log.
 - **Pause and stop live in the header**, as icons, so they work while the panel
   is collapsed. Do not move them into a footer. The glyph shows the action, the
   colour shows the current state.

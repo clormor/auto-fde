@@ -147,9 +147,14 @@ That default needs care. An `AudioContext` created without a user gesture starts
 suspended, and injection by a toolbar press does not give the page one, so a
 ticked box is not proof that any audio is playing. `settleKeepAlive()` calls
 `resume()`, and if the context is still suspended it arms a one-shot
-`pointerdown`/`keydown` listener and reports `starts on your next click` until
-then. Never let the box read as on while the context is suspended: that is a
-control claiming to do something it is not.
+`pointerdown`/`keydown` listener and retries on the first click or keypress.
+
+Neither setting carries a status field in the panel: each hint says what the
+setting does, not what it is currently doing. `reportKeepAlive()` and
+`reportResume()` log the state to the console instead, which is enough to check
+"ticked but suspended" when it matters. The exception is a resume that fails to
+send, which goes into the activity log, because a silent failure is the one thing
+that cannot be assumed away.
 
 **Failures go in the tooltip.** Anything the service worker logs lands in the
 service worker console, which is a different console from the page's and which
@@ -211,7 +216,7 @@ npx playwright install chromium
 npm run test:browser                  the in-page script and the packaged extension
 ```
 
-Both suites pass, 49/49 and 43/43.
+Both suites pass, 49/49 and 44/44.
 
 The browser suite serves its mock page through Playwright's request interception,
 so no request reaches Palantir and the test can use `example.com` hosts. Part one
