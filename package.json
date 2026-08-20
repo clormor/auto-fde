@@ -1,11 +1,11 @@
 {
-  "name": "ai-fde-autoallow",
+  "name": "auto-fde",
   "private": true,
-  "description": "Chrome extension wrapping the AI FDE AutoAllow script. The version lives in ai-fde-autoallow/manifest.json, not here.",
+  "type": "module",
+  "description": "Chrome extension that clicks Allow prompts on Foundry AI FDE session pages. The version lives in auto-fde/manifest.json, not here.",
   "scripts": {
-    "check": "./build.sh --check",
-    "build": "./build.sh",
-    "build:store": "./build.sh --store",
+    "check": "./check.sh",
+    "icons": "node tools/make-icons.mjs",
     "test": "node test/gate-test.mjs",
     "test:browser": "node test/ext-test.mjs"
   },

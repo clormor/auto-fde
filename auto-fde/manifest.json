@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Auto FDE",
+  "version": "3.0.0",
+  "description": "Clicks Allow prompts in a Foundry AI FDE session, keeps the tab awake, and resumes after network errors.",
+  "permissions": ["scripting", "storage"],
+  "optional_host_permissions": ["https://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Auto FDE: checking this page",
+    "default_icon": {
+      "16": "icons/icon16-inactive.png",
+      "32": "icons/icon32-inactive.png",
+      "48": "icons/icon48-inactive.png",
+      "128": "icons/icon128-inactive.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "start-auto-fde": {
+      "suggested_key": {
+        "default": "Alt+Shift+A"
+      },
+      "description": "Open Auto FDE on the current AI FDE session"
+    }
+  }
+}

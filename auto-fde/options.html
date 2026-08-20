@@ -1,0 +1,53 @@
+<meta charset="utf-8">
+<title>Auto FDE options</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font: 14px/1.5 system-ui, sans-serif;
+    max-width: 34rem;
+    margin: 2.5rem auto;
+    padding: 0 1.25rem;
+  }
+  h1 { font-size: 1.25rem; margin-bottom: .25rem; }
+  p.lede { margin-top: 0; opacity: .8; }
+  form { display: flex; gap: .5rem; margin: 1.25rem 0 .5rem; }
+  input[type=text] { flex: 1; padding: .5rem; font: inherit; }
+  button { padding: .5rem .9rem; font: inherit; cursor: pointer; }
+  ul { list-style: none; padding: 0; margin: 1rem 0; }
+  li {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: .75rem; padding: .55rem .7rem; margin-bottom: .4rem;
+    border: 1px solid currentColor; border-radius: 6px; opacity: .95;
+  }
+  li code { font-size: .95em; word-break: break-all; }
+  li button { padding: .2rem .55rem; }
+  .empty { opacity: .65; font-style: italic; }
+  #status { min-height: 1.5em; margin-top: .75rem; }
+  #status.error { color: #c0392b; }
+  .footnote { margin-top: 2rem; font-size: .9em; opacity: .75; }
+</style>
+
+<h1>Foundry base URLs</h1>
+<p class="lede">
+  Auto FDE only runs on AI FDE session pages on one of these. Nothing is
+  configured by default, so add the Foundry instance you use.
+</p>
+
+<form id="add-form">
+  <input id="origin-input" type="text" spellcheck="false" autocomplete="off"
+         placeholder="foundry.example.com" aria-label="Foundry base URL">
+  <button type="submit">Add</button>
+</form>
+
+<p id="status" role="status" aria-live="polite"></p>
+
+<ul id="origin-list"></ul>
+
+<p class="footnote">
+  Paste a whole session URL if that is easier; everything after the host is
+  discarded. Chrome will ask permission for each host you add, and removing one
+  here hands that permission back. Wildcards are not accepted: add each instance
+  separately.
+</p>
+
+<script type="module" src="options.js"></script>
