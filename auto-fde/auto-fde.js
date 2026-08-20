@@ -96,8 +96,23 @@
   let audioCtx = null, keepAliveOn = false, awaitingGesture = false;
   let disarmGesture = () => {};
 
+  // Nothing is created until the page has been activated. An AudioContext built
+  // without a gesture cannot start, and Chrome writes its own warning into the
+  // page's console saying so, which is somebody else's console to be littering.
+  // userActivation.hasBeenActive says whether the page has already been used, so
+  // a panel opened on a session somebody has been working in starts the audio at
+  // once and everything else waits for the first click.
   function startKeepAlive() {
     if (keepAliveOn) return;
+    keepAliveOn = true;
+    if (navigator.userActivation && navigator.userActivation.hasBeenActive) {
+      openAudio();
+      return;
+    }
+    armGesture();
+  }
+
+  function openAudio() {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
@@ -106,7 +121,6 @@
     osc.connect(gain).connect(audioCtx.destination);
     osc.start();
     audioCtx.__osc = osc;
-    keepAliveOn = true;
     settleKeepAlive();
   }
 
@@ -132,7 +146,9 @@
     appendLog(new Date().toLocaleTimeString(), 'click the page once to keep the tab awake');
     const onGesture = () => {
       disarmGesture();
-      if (keepAliveOn) settleKeepAlive();
+      if (!keepAliveOn) return;
+      if (audioCtx) settleKeepAlive();
+      else openAudio();
     };
     GESTURE_EVENTS.forEach(e => window.addEventListener(e, onGesture, true));
     disarmGesture = () => {
@@ -145,9 +161,13 @@
   function stopKeepAlive() {
     disarmGesture();
     if (!keepAliveOn) return;
-    audioCtx.__osc.stop();
-    audioCtx.close();
-    audioCtx = null;
+    // There may be no context at all: the box can be ticked on a page nobody has
+    // touched yet, in which case this is still waiting for the first click.
+    if (audioCtx) {
+      audioCtx.__osc.stop();
+      audioCtx.close();
+      audioCtx = null;
+    }
     keepAliveOn = false;
     reportKeepAlive('Off');
   }
@@ -191,7 +211,6 @@
       return;
     }
     visibilitySpoofed = true;
-    console.log('[Auto FDE] tell the page the tab is visible: On');
   }
 
   function stopVisibilitySpoof() {
@@ -201,7 +220,6 @@
     delete document.hidden;
     delete document.visibilityState;
     visibilitySpoofed = false;
-    console.log('[Auto FDE] tell the page the tab is visible: Off');
   }
 
   // ---------- Network-error auto-resume ----------
@@ -317,569 +335,99 @@
     recovering = false;
   }
 
-  // ---------- Traffic watch ----------
-  // A diagnostic, off until it is asked for from the console as
-  // window.__autoFde.watchTraffic(). It is not in the panel because it is not a
-  // decision anyone makes while using this; it is one step in working out whether
-  // an approval can be sent rather than clicked.
+  // ---------- Answering a prompt with no row ----------
+  // The whole point of the tool, and the only thing that works in a background
+  // tab. Chrome draws no frames for a hidden tab, so the windowed transcript
+  // never mounts the row and there is no button in the document to press. The
+  // pending item is in the session's own store the whole time, and the store is
+  // reachable from the pill, so the answer is written there instead.
   //
-  // Why it exists: the DOM route cannot reach a prompt in a tab Chrome is not
-  // drawing, because the row is not in the document to be reached. Sending the
-  // approval the way the page sends it would work in any tab, and the only thing
-  // that knows what the page sends is the page. So this logs the request going
-  // out when an approval is granted: method, URL, and a truncated body.
-  //
-  // Never a header. That is where the session token is, and this writes to a
-  // console whose contents get copied into chat windows.
-  //
-  // A first pass at this printed the first 800 characters of every body matching
-  // the word, which on a Foundry thread is 800 characters of tool configuration
-  // and item ids with the interesting field somewhere past the cut. So the body
-  // is not printed whole: it is parsed, walked, and only the paths whose key or
-  // value carries the word are reported. That turns a wall of thread document
-  // into the two or three fields an approval actually sets.
-  const APPROVAL_TRAFFIC = /approv/i;
-  const SESSION_API = '/ai-fde/api/';
-  const BODY_LIMIT = 240;
-  const FIELD_LIMIT = 12;
-  const FIELD_VALUE_LIMIT = 200;
-  // The session's own approval policy, which is the one field worth reading
-  // whole. It is what decides whether a prompt appears at all, so a truncated
-  // copy of it is the one truncation that costs something.
-  const POLICY_FIELD = /approvalsettings|bulkapproval/i;
-  const POLICY_VALUE_LIMIT = 2500;
-  const WALK_DEPTH = 8;
-  // How long after an Allow is pressed to treat everything as interesting. The
-  // request that grants the approval is the one that follows the click, and
-  // knowing which one that is beats guessing from its name.
-  const CLICK_WINDOW_MS = 2000;
-  let watching = false, capturingUntil = 0;
+  // What a click does, measured from a live session: it sends
+  // removeToolApprovalOverride, then upsertChildContextItem carrying the item
+  // with its toolResponse set, then changeRequestStatus. So this sets the same
+  // response on the same item and starts the loop, which is what issues the
+  // status change itself.
+  const UPSERT_EVENT = 'upsertChildContextItem';
+  // What a click was measured to write. Learning replaces it when a click is
+  // seen, because a measured constant is a constant that can rot.
+  const DEFAULT_RESPONSE = { state: 'requested' };
+  const PENDING_STATE = /pending/i;
+  const STATE_INTERVAL_MS = 1000;
+  // The item is nested under content on the wire and flat in the store, so a few
+  // levels are searched rather than one.
+  const ITEM_SEARCH_DEPTH = 4;
+  const RESPONSE_LIMIT = 400;
+  // Far enough to reach the store from a transcript row, which sits some sixty
+  // components below it. A shorter walk reaches it from the pill and reports that
+  // no store exists from anywhere else.
+  const STORE_LEVELS = 200;
+  const REACT_FIBER = /^__reactFiber\$|^__reactInternalInstance\$/;
+  const ITEM_ID_PROPS = ['toolUseId', 'contextItemId', 'maybePendingUserActionContextItemId'];
+
+  let lastStateTryAt = 0;
+  let learnedResponse = null;
+  let knownStore = null;
+  let awaitingGrant = null, grantRead = false;
+  const refusedWithoutARow = new Set();
+  const failedToAnswer = new Set();
 
   function shorten(text, limit) {
     return text.length > limit ? text.slice(0, limit) + '…' : text;
   }
-
-  // Every path whose key or string value carries the word, which is what an
-  // approval sets and what a body this size buries.
-  function approvalFields(text) {
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return [];
-    }
-    const found = [];
-    // A field named for approval whose value is also the word reports itself
-    // twice, once for each, and two identical lines read as two findings.
-    const add = entry => {
-      if (!found.includes(entry)) found.push(entry);
-    };
-    const walk = (value, path, depth) => {
-      if (found.length >= FIELD_LIMIT || depth > WALK_DEPTH) return;
-      if (Array.isArray(value)) {
-        value.forEach((item, i) => walk(item, `${path}[${i}]`, depth + 1));
-        return;
-      }
-      if (value && typeof value === 'object') {
-        Object.keys(value).forEach(key => {
-          const here = path ? `${path}.${key}` : key;
-          if (APPROVAL_TRAFFIC.test(key)) {
-            const limit = POLICY_FIELD.test(key) ? POLICY_VALUE_LIMIT : FIELD_VALUE_LIMIT;
-            add(`${here} = ${shorten(JSON.stringify(value[key]), limit)}`);
-          }
-          walk(value[key], here, depth + 1);
-        });
-        return;
-      }
-      if (typeof value === 'string' && APPROVAL_TRAFFIC.test(value)) {
-        add(`${path} = ${JSON.stringify(shorten(value, FIELD_VALUE_LIMIT))}`);
-      }
-    };
-    walk(parsed, '', 0);
-    return found;
-  }
-
-  // The grant carries no field named after approval, so there is nothing to
-  // search for and the body has to be read. Read whole it is unreadable: the
-  // thread document leads with hundreds of item ids. So every top-level key is
-  // reported, an array of nothing but strings as a count and a sample, and
-  // everything else in full up to a generous limit. Whatever an approval sets
-  // lives in one of the keys that is not the item order.
-  const SHAPE_VALUE_LIMIT = 1200;
-  const SHAPE_SAMPLE = 2;
-
-  function describeBody(text) {
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return [`body: ${shorten(text, BODY_LIMIT)}`];
-    }
-    if (!parsed || typeof parsed !== 'object') {
-      return [`body: ${shorten(text, BODY_LIMIT)}`];
-    }
-    return Object.keys(parsed).map(key => {
-      const value = parsed[key];
-      if (Array.isArray(value) && value.every(item => typeof item === 'string')) {
-        return `${key}: ${value.length} strings, first `
-          + `${JSON.stringify(value.slice(0, SHAPE_SAMPLE))}`;
-      }
-      return `${key}: ${shorten(JSON.stringify(value), SHAPE_VALUE_LIMIT)}`;
-    });
-  }
-
-  // Called when a prompt is clicked, so the log says what followed it. The window
-  // opens whether or not the traffic watch is on, because the store watch reads
-  // from the same window and has its own reason to exist. Only the line about
-  // traffic belongs to the traffic watch.
-  function markApprovalClick() {
-    capturingUntil = Date.now() + CLICK_WINDOW_MS;
-    if (watching) {
-      console.log('[Auto FDE] traffic: --- Allow clicked, what follows is the grant ---');
-    }
-  }
-
-  function watchTraffic(options) {
-    const everything = !!(options && options.all);
-    if (watching) {
-      console.log('[Auto FDE] traffic watch is already on');
-      return 'already on';
-    }
-    watching = true;
-
-    // The same thread metadata goes out over and over with a new version each
-    // time. Repeats of a request that says nothing new are dropped, or the one
-    // line that matters scrolls away.
-    const seen = new Set();
-
-    const report = (how, url, body) => {
-      const text = typeof body === 'string' ? body : (body == null ? '' : String(body));
-      const following = Date.now() < capturingUntil;
-      const onApi = url.includes(SESSION_API);
-      const named = APPROVAL_TRAFFIC.test(url) || APPROVAL_TRAFFIC.test(text);
-      // The session's own API either way. The word is only asked for outside the
-      // window, because the grant turned out not to carry it, and without the
-      // first half a repository query called QuickApprovalProjectQuery is the
-      // loudest thing in the log and a dataset query is the second.
-      if (!everything && !(onApi && (following || named))) return;
-
-      const fields = approvalFields(text);
-      const signature = `${how} ${url} ${fields.join(';')}`;
-      if (!following) {
-        if (seen.has(signature)) return;
-        if (seen.size > 50) seen.clear();
-        seen.add(signature);
-      }
-
-      // In the window the shape is printed instead of the body: the grant is a
-      // thread document, and every key of it except the item order is worth
-      // reading, while the item order is hundreds of ids and never the point.
-      const detail = following
-        ? describeBody(text).map(line => `  ${line}`)
-        : [`  body: ${shorten(text, BODY_LIMIT)}`];
-
-      // The colon is load-bearing: it is what the line the user is asked to copy
-      // has and the banner below does not.
-      console.log([
-        `[Auto FDE] traffic: ${how} ${url}`,
-        fields.length ? `  fields: ${fields.join('\n          ')}` : '  fields: none',
-        ...(text ? detail : []),
-      ].filter(Boolean).join('\n'));
-    };
-
-    const realFetch = window.fetch;
-    const realOpen = XMLHttpRequest.prototype.open;
-    const realSend = XMLHttpRequest.prototype.send;
-    const realWsSend = WebSocket.prototype.send;
-
-    // A Request object carries its body in a stream that reading would consume,
-    // so only the URL is taken from one. The page's own approval call is the one
-    // that matters and applications send those with an init body.
-    window.fetch = function (input, init) {
-      const url = typeof input === 'string' ? input : (input && input.url) || '';
-      report('fetch', url, init && init.body);
-      return realFetch.apply(this, arguments);
-    };
-    XMLHttpRequest.prototype.open = function (method, url) {
-      this.__autoFdeUrl = url;
-      return realOpen.apply(this, arguments);
-    };
-    XMLHttpRequest.prototype.send = function (body) {
-      report('xhr', this.__autoFdeUrl || '', body);
-      return realSend.apply(this, arguments);
-    };
-    WebSocket.prototype.send = function (data) {
-      report('ws', this.url || '', typeof data === 'string' ? data : '[binary]');
-      return realWsSend.apply(this, arguments);
-    };
-
-    // Stop has to undo everything, and a wrapped fetch left on a page whose
-    // panel has been removed is exactly the kind of thing that rule is for.
-    teardown.push(() => {
-      window.fetch = realFetch;
-      XMLHttpRequest.prototype.open = realOpen;
-      XMLHttpRequest.prototype.send = realSend;
-      WebSocket.prototype.send = realWsSend;
-      watching = false;
-    });
-
-    console.log(`[Auto FDE] traffic watch is on${everything ? ', logging everything' : ''}.`
-      + ' Let it approve one prompt, then copy every line starting "[Auto FDE] traffic:".');
-    return 'on';
-  }
-
-  // ---------- State probe ----------
-  // Reached from the console as window.__autoFde.probeApproval(), and the second
-  // capture step. The first one established that an approval is a state
-  // transition inside the page rather than a request to a server: the client
-  // holds the thread, writes `toolResponse.state: "pending_approval"` into it,
-  // and carries on when the button is pressed. There is nothing on the far end to
-  // tell.
-  //
-  // That is what makes a third route possible. This script runs in the page's own
-  // world, so the state the button changes is reachable from here whether or not
-  // the button is. And the state is mounted even in a hidden tab, because the
-  // pending pill renders from it, which is how the pill can be found at all.
-  //
-  // So the target is the function the button calls, and the object holding the
-  // pending call. This walks React's fiber tree up from whichever anchor exists,
-  // preferring an Allow button while there is one and falling back to the pill,
-  // and reports each component's name, its function props by name, and its other
-  // props by shape. Names and shapes only: props on a thread component hold the
-  // conversation, and this output gets pasted into chat windows.
-  //
-  // It runs itself twice rather than waiting to be asked, because the interesting
-  // half is the hidden tab and a console command cannot be timed against one: to
-  // type it you focus DevTools, and the answer wanted is what the page looks like
-  // when nobody is. So the probe fires once from the first Allow this panel
-  // presses, which is the mounted case, and again from the pill when a stall is
-  // reported, which is the case that matters. Once each, since the point is a map
-  // and not a running commentary.
-  const REACT_FIBER = /^__reactFiber\$|^__reactInternalInstance\$/;
-  const PROBE_INTERESTING = /approv|pending|tool|item|thread|decision|allow|state/i;
-  const PROBE_LEVELS = 40;
-  const PROBE_KEYS = 12;
-  const PROBE_STRING_LIMIT = 120;
-  let probedAClick = false;
 
   function fiberFor(el) {
     const key = Object.keys(el).find(name => REACT_FIBER.test(name));
     return key ? el[key] : null;
   }
 
-  function fiberName(fiber) {
-    const type = fiber.type || fiber.elementType;
-    if (!type) return '(host)';
-    if (typeof type === 'string') return type;
-    return type.displayName || type.name || '(anonymous)';
-  }
-
-  // Shapes, not contents. A prop on one of these components is as likely to be
-  // the whole conversation as it is to be a flag, and JSON.stringify on a fiber
-  // prop finds a cycle sooner or later anyway.
-  function describeValue(value) {
-    if (typeof value === 'function') return 'fn';
-    if (value === null) return 'null';
-    if (Array.isArray(value)) return `array[${value.length}]`;
-    if (typeof value === 'object') {
-      const keys = Object.keys(value);
-      return `{${keys.slice(0, PROBE_KEYS).join(', ')}${keys.length > PROBE_KEYS ? ', …' : ''}}`;
+  // Anything the page threaded down as a prop, taken from wherever it is still
+  // mounted. startAgentLoop is in reach from the pill, which is what lets this
+  // work with no row.
+  function propFrom(el, names, wanted) {
+    let fiber = fiberFor(el);
+    for (let level = 0; fiber && level < STORE_LEVELS; level++, fiber = fiber.return) {
+      const props = fiber.memoizedProps;
+      if (!props || typeof props !== 'object') continue;
+      for (const name of names) {
+        if (typeof props[name] === wanted && props[name]) return props[name];
+      }
     }
-    if (typeof value === 'string') return JSON.stringify(shorten(value, PROBE_STRING_LIMIT));
-    return String(value);
-  }
-
-  // An anchor with no fiber on it is no use, so one that has a fiber wins over
-  // one that merely comes first in the document. Falling back to an anchor
-  // without one is still better than saying nothing was pending, because then
-  // the report says which of the two things went wrong.
-  function probeAnchor() {
-    const buttons = Array.from(document.querySelectorAll('button'))
-      .filter(b => TARGET_LABELS.includes(labelFor(b).toLowerCase()));
-    const wired = buttons.find(fiberFor);
-    if (wired) return { what: 'an Allow button', el: wired };
-    const marker = findPendingMarker();
-    if (marker && fiberFor(marker)) return { what: 'the pending pill', el: marker };
-    if (buttons.length) return { what: 'an Allow button', el: buttons[0] };
-    if (marker) return { what: 'the pending pill', el: marker };
     return null;
   }
 
-  function probeApproval() {
-    const anchor = probeAnchor();
-    if (!anchor) {
-      console.warn('[Auto FDE] probe: nothing to start from. Run it while a prompt is pending.');
-      return 'nothing pending';
-    }
-    return probeFrom(anchor.el, anchor.what);
-  }
-
-  // Props are only what a component was handed. The first walk against a real
-  // session showed the state is all there in a hidden tab, contextMap,
-  // contextOrder, sessionState, startAgentLoop, and no way to change any of it,
-  // because the functions that do live in a context value or a hook rather than
-  // in props. This reports those two.
-  //
-  // Only shapes whose keys look like they could answer a prompt are printed. A
-  // provider value or a hook's state is otherwise most of the application, and
-  // this output goes in a chat window.
-  const PROBE_ACTIONS = /approv|allow|accept|deny|decision|respond|resolve|submit|continue|resume|dispatch/i;
-  const PROBE_HOOKS = 30;
-  const PROBE_SHAPES = 8;
-
-  function stateShapes(fiber) {
-    const out = [];
-    const props = fiber.memoizedProps;
-    // A context provider carries everything it offers in one prop, so the shape
-    // of that prop is the shape of what its subtree can reach.
-    const value = props && typeof props === 'object' ? props.value : null;
-    if (value && (typeof value === 'object' || typeof value === 'function')) {
-      out.push(`value: ${describeValue(value)}`);
-    }
-    // A function component's memoizedState is a linked list of hooks. A store or
-    // a reducer's dispatch sits in one of them.
-    let hook = fiber.memoizedState;
-    for (let i = 0; hook && i < PROBE_HOOKS && out.length < PROBE_SHAPES; i++, hook = hook.next) {
-      const state = hook.memoizedState;
-      // nodeType rules out a hook holding a DOM node, which describes itself as
-      // the entire element otherwise.
-      if (!state || typeof state !== 'object' || state.nodeType) continue;
-      const keys = Object.keys(state);
-      if (!keys.some(key => PROBE_ACTIONS.test(key) || PROBE_INTERESTING.test(key))) continue;
-      out.push(`hook ${i}: ${describeValue(state)}`);
-    }
-    return out;
-  }
-
-  // ---------- Store probe ----------
-  // The walk from the pill found the store: a context value of
-  // {__enqueueEffect, __setState, agent, dispatch, getSnapshot, subscribe},
-  // mounted with no row in the document, over state of {agentStatus, contextMap,
-  // contextOrder, requestStatus, sessionState, …}. The walk from a mounted button
-  // found what the click does: handleAllow on the button pair, over
-  // handleUpdateContextItem and startAgentLoop on the row, against a toolUseId.
-  //
-  // What is left to establish is how to say it. This reads the store and reports
-  // the pending item and the names the store answers to. Read-only, on purpose:
-  // dispatching a guessed action into somebody's live session is the one thing
-  // worth being slow about.
-  const PENDING_STATE = /pending/i;
-  const ITEM_SEARCH_DEPTH = 4;
-  const EVENT_NAMES_LIMIT = 1200;
-  // Up here rather than beside the grant reader, because describeArg() prints a
-  // toolResponse too and is declared above it.
-  const GRANT_LIMIT = 400;
-
+  // The store is a context value carrying {__setState, agent, dispatch,
+  // getSnapshot, subscribe} over the agent state. dispatch is there and is not
+  // used: see writeAnswer. Cached, because it is the same one for the life of a
+  // session and the walk is not free.
   function looksLikeStore(value) {
     return !!value && typeof value === 'object'
       && typeof value.getSnapshot === 'function'
-      && (typeof value.dispatch === 'function' || typeof value.__setState === 'function');
+      && typeof value.__setState === 'function'
+      && !!value.agent && typeof value.agent.onEvent === 'function';
   }
 
-  // The store hides in the same two places the setters do, so the search is the
-  // one stateShapes() reports from, narrowed to what answers like a store.
-  //
-  // STORE_LEVELS is not PROBE_LEVELS and the difference cost a whole run. Forty
-  // levels is a readable amount to print and it reaches the store from the pill,
-  // which sits near the root. From a transcript row the store is far further up,
-  // past the row, the sortable list and the rest, so a search capped at forty
-  // found nothing and reported that no store existed. A search goes to the root;
-  // only the printing is capped.
-  const STORE_LEVELS = 200;
-  let knownStore = null, storeSearchWarned = false;
-
-  // Cached, because it is the same store every time and the walk is not free.
   function getStore(el) {
     if (knownStore) return knownStore;
-    const found = findStore(el);
-    if (found) {
-      knownStore = found;
-      return found;
-    }
-    if (!storeSearchWarned) {
-      storeSearchWarned = true;
-      console.warn('[Auto FDE] store: none reachable from the prompt.');
-    }
-    return null;
-  }
-
-  function findStore(el) {
     let fiber = fiberFor(el);
     for (let level = 0; fiber && level < STORE_LEVELS; level++, fiber = fiber.return) {
       const props = fiber.memoizedProps;
       if (props && typeof props === 'object' && looksLikeStore(props.value)) {
-        return { store: props.value, where: `${level} ${fiberName(fiber)} value` };
-      }
-      let hook = fiber.memoizedState;
-      for (let i = 0; hook && i < PROBE_HOOKS; i++, hook = hook.next) {
-        if (looksLikeStore(hook.memoizedState)) {
-          return { store: hook.memoizedState, where: `${level} ${fiberName(fiber)} hook ${i}` };
-        }
+        knownStore = props.value;
+        return knownStore;
       }
     }
     return null;
   }
 
-  // The traffic capture gave the shape to look for: a tool-usage item whose
-  // toolResponse carries a state of pending_approval. It sits under content in
-  // what goes over the wire, so a few levels are searched rather than one.
-  function findPendingItem(value, path, depth) {
-    if (!value || typeof value !== 'object' || depth > ITEM_SEARCH_DEPTH) return null;
-    const response = value.toolResponse;
-    if (response && typeof response.state === 'string' && PENDING_STATE.test(response.state)) {
-      return { path, item: value };
-    }
-    const keys = Array.isArray(value) ? value.keys() : Object.keys(value);
-    for (const key of keys) {
-      const found = findPendingItem(value[key], `${path}.${key}`, depth + 1);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  function probeStore() {
-    const anchor = probeAnchor();
-    if (!anchor) {
-      console.warn('[Auto FDE] store: nothing pending to start from.');
-      return 'nothing pending';
-    }
-    const found = getStore(anchor.el);
-    if (!found) return 'no store';
-
-    const lines = [`[Auto FDE] store: found at ${found.where}, from ${anchor.what}`];
-    lines.push(`  store: ${describeValue(found.store)}`);
-    const agent = found.store.agent;
-    lines.push(`  agent: ${describeValue(agent)}`);
-    // agent came back as {contextItems, effectHandlers, events, onEvent}, so it
-    // takes events rather than offering methods. If the event names are in there,
-    // they are the vocabulary, and one of them answers a prompt.
-    if (agent && typeof agent === 'object') {
-      ['events', 'effectHandlers', 'contextItems'].forEach(key => {
-        if (agent[key] != null) lines.push(`  agent.${key}: ${describeValue(agent[key])}`);
-      });
-      // agent.events came back as array[35]. If those are the events the agent
-      // has seen rather than the ones it accepts, one of them is an approval
-      // already granted in this session, and the vocabulary needs no click to
-      // learn. The tail, because the recent ones are the relevant ones.
-      // Each entry came back as {make, schema}, so these are definitions rather
-      // than a log: the vocabulary itself. The factory's name is the event's
-      // name, which is the whole list in one line.
-      if (Array.isArray(agent.events)) {
-        const names = agent.events
-          .map(event => (event && typeof event.make === 'function' && event.make.name) || '?')
-          .join(', ');
-        lines.push(`  agent.events names: ${shorten(names, EVENT_NAMES_LIMIT)}`);
-      }
-    }
-
-    let snapshot = null;
-    try {
-      snapshot = found.store.getSnapshot();
-    } catch (err) {
-      lines.push(`  getSnapshot threw: ${err.message}`);
-    }
-    if (snapshot && typeof snapshot === 'object') {
-      lines.push(`  snapshot: ${describeValue(snapshot)}`);
-      // Neither of these printed on the first run, because both were being
-      // reported only when they were strings and neither is one. Their shape is
-      // what says whether the loop is waiting on the user or on something else.
-      ['agentStatus', 'requestStatus'].forEach(key => {
-        if (snapshot[key] != null) lines.push(`  ${key}: ${describeValue(snapshot[key])}`);
-      });
-      if (Array.isArray(snapshot.contextOrder)) {
-        lines.push(`  contextOrder: ${snapshot.contextOrder.length} ids`);
-      }
-      const pending = findPendingItem(snapshot.contextMap, 'contextMap', 0);
-      if (!pending) {
-        lines.push('  pending item: none found in contextMap');
-      } else {
-        lines.push(`  pending item: at ${pending.path}`);
-        lines.push(`    item: ${describeValue(pending.item)}`);
-        lines.push(`    toolName: ${JSON.stringify(pending.item.toolName)}`);
-        lines.push(`    toolResponse: ${JSON.stringify(pending.item.toolResponse)}`);
-      }
-    }
-    console.log(lines.join('\n'));
-    return 'probed';
-  }
-
-  // ---------- Store watch ----------
-  // The store takes events and the event that answers a prompt is not guessable,
-  // so the same trick as the traffic watch: let the page send it and read what it
-  // sent. dispatch and agent.onEvent are wrapped, they pass everything through
-  // untouched, and they only log inside the window a click opens, which is what
-  // separates the grant from everything else the session is doing.
-  //
-  // Installed from the button about to be pressed, so the click that follows is
-  // the one that gets read. Stop puts both back.
-  let storeWatched = false;
-
-  function describeArg(value) {
-    if (!value || typeof value !== 'object') return describeValue(value);
-    const type = value.type;
-    const head = typeof type === 'string' ? `type=${JSON.stringify(type)} ` : '';
-    // upsertChildContextItem is the event that answers a prompt, and the answer
-    // is the toolResponse it carries. Everything else about the item is the
-    // conversation, so only that one field is printed.
-    const item = value.contextItem;
-    const holder = item ? findToolResponse(item, 0) : null;
-    const tail = holder ? ` toolResponse=${shorten(JSON.stringify(holder.toolResponse), GRANT_LIMIT)}` : '';
-    return `${head}${describeValue(value)}${tail}`;
-  }
-
-  function installStoreWatch(el) {
-    if (storeWatched) return;
-    const found = getStore(el);
-    // Not latched on failure. Latching before the search is what turned one bad
-    // search into a run with no watch at all and no second attempt at getting
-    // one.
-    if (!found) return;
-    storeWatched = true;
-
-    const wrap = (owner, name, label) => {
-      const real = owner[name];
-      if (typeof real !== 'function') return;
-      try {
-        owner[name] = function (...args) {
-          if (Date.now() < capturingUntil) {
-            console.log(`[Auto FDE] store ${label}: ${args.map(describeArg).join(' , ')}`);
-          }
-          return real.apply(this, args);
-        };
-      } catch (err) {
-        console.warn(`[Auto FDE] store watch: could not wrap ${label}: ${err.message}`);
-        return;
-      }
-      teardown.push(() => { owner[name] = real; });
-    };
-
-    wrap(found.store, 'dispatch', 'dispatch');
-    if (found.store.agent) wrap(found.store.agent, 'onEvent', 'agent.onEvent');
-    console.log(`[Auto FDE] store watch on at ${found.where}.`
-      + ' The next Allow will show what it sends.');
-  }
-
-  // ---------- Reading the grant out of the store ----------
-  // The shortest route to what an approval actually sets, and it needs no
-  // vocabulary: read the pending item's toolResponse from the store immediately
-  // before a click, then read the same item again once the page has answered.
-  // The difference is the target state, stated by the application rather than
-  // guessed at. `pending_approval` is known; what replaces it is not.
-  let awaitingGrant = null, grantRead = false;
-  let reportedStateFailure = false;
-  const refusedWithoutARow = new Set();
-
-  function safeSnapshot(store) {
+  function snapshotOf(store) {
     try {
       return store.getSnapshot();
     } catch (err) {
-      console.warn(`[Auto FDE] store: getSnapshot threw: ${err.message}`);
+      console.warn(`[Auto FDE] the session's store would not report its state: ${err.message}`);
       return null;
     }
   }
 
-  // The item sits under content in what goes over the wire and at the top level
-  // in the store, so neither depth is assumed.
   function findToolResponse(value, depth) {
     if (!value || typeof value !== 'object' || depth > ITEM_SEARCH_DEPTH) return null;
     if (value.toolResponse) return value;
@@ -890,208 +438,142 @@
     return null;
   }
 
-  // The id of the item this button belongs to, read off its own fibers. Taking
-  // the first pending item in the map instead is what made this silent: with
-  // several prompts queued it watched one the click was never going to answer,
-  // and the guard against noting twice meant it never tried again.
-  const ITEM_ID_PROPS = ['toolUseId', 'contextItemId', 'maybePendingUserActionContextItemId', 'itemId'];
-
-  function itemIdFor(el) {
-    let fiber = fiberFor(el);
-    for (let level = 0; fiber && level < STORE_LEVELS; level++, fiber = fiber.return) {
-      const props = fiber.memoizedProps;
-      if (!props || typeof props !== 'object') continue;
-      for (const key of ITEM_ID_PROPS) {
-        if (typeof props[key] === 'string' && props[key]) return props[key];
-      }
+  function findPendingItem(map) {
+    if (!map || typeof map !== 'object') return null;
+    for (const key of Object.keys(map)) {
+      const holder = findToolResponse(map[key], 0);
+      const state = holder && holder.toolResponse && holder.toolResponse.state;
+      if (typeof state === 'string' && PENDING_STATE.test(state) && holder.id) return holder;
     }
     return null;
   }
 
+  // ---------- Learning what an approval writes ----------
+  // The response a click produces, read out of the store either side of one. The
+  // constant above came from this and is only a starting point: a session running
+  // a newer build teaches this the current answer the first time it presses
+  // anything. The item watched is the one the button belongs to, taken off its own
+  // fibers, because with several prompts queued the first pending item in the map
+  // is not necessarily the one being answered.
   function noteGrantBefore(el) {
     if (grantRead || awaitingGrant) return;
-    const found = getStore(el);
-    if (!found) return;
-    const snapshot = safeSnapshot(found.store);
+    const store = getStore(el);
+    const snapshot = store && snapshotOf(store);
     const map = snapshot && snapshot.contextMap;
     if (!map) return;
-
-    const id = itemIdFor(el);
-    const holder = id ? findToolResponse(map[id], 0) : null;
-    if (holder) {
-      awaitingGrant = { id, before: shorten(JSON.stringify(holder.toolResponse), GRANT_LIMIT) };
-      return;
-    }
-    // No id on the fibers, so fall back to whatever is pending. Better than
-    // nothing, and the log says which id it settled on either way.
-    const pending = findPendingItem(map, 'contextMap', 0);
-    if (!pending || !pending.item.id) return;
-    awaitingGrant = {
-      id: pending.item.id,
-      before: shorten(JSON.stringify(pending.item.toolResponse), GRANT_LIMIT),
-    };
+    const id = propFrom(el, ITEM_ID_PROPS, 'string');
+    const holder = id ? findToolResponse(map[id], 0) : findPendingItem(map);
+    if (!holder) return;
+    awaitingGrant = { id: holder.id, before: JSON.stringify(holder.toolResponse) };
   }
 
   function readGrantAfter() {
     if (!awaitingGrant || !knownStore) return;
-    const snapshot = safeSnapshot(knownStore.store);
+    const snapshot = snapshotOf(knownStore);
     const map = snapshot && snapshot.contextMap;
     const holder = map ? findToolResponse(map[awaitingGrant.id], 0) : null;
     if (!holder) return;
-    const after = shorten(JSON.stringify(holder.toolResponse), GRANT_LIMIT);
+    const after = JSON.stringify(holder.toolResponse);
     if (after === awaitingGrant.before) return;
-    // The whole point of reading it: this is what an approval writes, taken from
-    // an approval that worked, in this session, on this build of Foundry. It is
-    // what a prompt with no row to press gets set to.
     learnedResponse = holder.toolResponse;
-    console.log(`[Auto FDE] store grant: item ${awaitingGrant.id}`
-      + `\n  toolResponse before: ${awaitingGrant.before}`
-      + `\n  toolResponse after:  ${after}`);
-    appendLog(new Date().toLocaleTimeString(), 'learned how an approval is written');
+    console.log(`[Auto FDE] an approval writes ${shorten(after, RESPONSE_LIMIT)}`);
     awaitingGrant = null;
     grantRead = true;
   }
 
-  // ---------- Answering a prompt with no row ----------
-  // The end of the road this has been walking. A prompt in a hidden tab has no
-  // button, because Chrome draws no frames and the list mounts no row, but the
-  // pending item is in the store and the store is reachable. So the answer is
-  // written into the store instead, exactly as a real click writes it.
-  //
-  // Nothing here is guessed. learnedResponse is the toolResponse that a click
-  // this panel made produced, read back out of the store afterwards, so the value
-  // comes from this session and this build rather than from a constant that would
-  // rot. Until a click has been seen, this does nothing at all.
-  const UPSERT_EVENT = 'upsertChildContextItem';
-  // What a real click was measured to write, so the feature works from the first
-  // prompt rather than only after one has been answered in front of somebody.
-  // Learning still wins when it happens, because a measured constant is a
-  // constant that can rot, and the learned one comes from the running build.
-  const DEFAULT_RESPONSE = { state: 'requested' };
-  const STATE_INTERVAL_MS = 1000;
-  let learnedResponse = null;
-  let stateApprovals = false;
-  let lastStateTryAt = 0;
-
-  // A function threaded down through props, taken from wherever it is still
-  // mounted. startAgentLoop is in reach from the pill, which is what makes this
-  // work with no row.
-  function findFn(el, name) {
-    let fiber = fiberFor(el);
-    for (let level = 0; fiber && level < STORE_LEVELS; level++, fiber = fiber.return) {
-      const props = fiber.memoizedProps;
-      if (props && typeof props === 'object' && typeof props[name] === 'function') {
-        return props[name];
-      }
+  // ---------- Writing the answer ----------
+  // Every way out of here used to be silent, which made a refusal look identical
+  // to the feature being dead. Each reason is said once.
+  const declined = new Set();
+  function decline(reason) {
+    if (!declined.has(reason)) {
+      declined.add(reason);
+      console.warn(`[Auto FDE] no-button answer declined: ${reason}`);
     }
-    return null;
+    return false;
   }
 
-  function sendEvent(store, event) {
-    if (typeof store.dispatch !== 'function') return false;
+  // The tool's name, and nothing else. Its arguments looked like a better signal
+  // and are not: update_notepad_dsl carries an entire notepad document, so a
+  // transcript mentioning production anywhere refused every notepad write in the
+  // session. Arguments are content, and content is not intent.
+  function stateContextFor(item) {
+    return `${item.toolName || ''} ${item.toolDisplayName || ''}`.toLowerCase();
+  }
+
+  // store.dispatch refuses the very event its own reducer accepts, with an
+  // exhaustive match error: the page reaches the reducer through a reference the
+  // store closed over, so the public property is a different door. What does work
+  // is running the reducer and handing the store the result, as an updater.
+  // agent.onEvent(state, event) is the exact call the page makes, observed.
+  function writeAnswer(store, event) {
     try {
-      store.dispatch(event);
+      store.__setState(current => store.agent.onEvent(current, event));
       return true;
     } catch (err) {
-      console.warn(`[Auto FDE] state approval: dispatch threw: ${err.message}`);
+      console.warn(`[Auto FDE] the session refused the answer: ${err.message}`);
       return false;
     }
   }
 
-  // What a prompt is asking for, as well as it can be known without the row. The
-  // tool's name and its arguments are better than what the DOM route reads off a
-  // rendered prompt, so the block list and the categories apply here too.
-  function stateContextFor(item) {
-    return `${item.toolName || ''} ${item.toolDisplayName || ''} `
-      .concat(JSON.stringify(item.toolRequest || {})).toLowerCase();
-  }
-
   function answerWithoutARow(anchor) {
-    if (!stateApprovals) return false;
     const response = learnedResponse || DEFAULT_RESPONSE;
-    const found = getStore(anchor);
-    if (!found) return false;
-    const snapshot = safeSnapshot(found.store);
+    const store = getStore(anchor);
+    if (!store) return decline("the session's store is not reachable from the pill");
+    const snapshot = snapshotOf(store);
     const map = snapshot && snapshot.contextMap;
-    if (!map) return false;
-    const pending = findPendingItem(map, 'contextMap', 0);
-    if (!pending || !pending.item.id) return false;
+    if (!map) return decline('the store reports no context map');
+    const pending = findPendingItem(map);
+    if (!pending) return decline('nothing in the session is pending approval');
+    if (failedToAnswer.has(pending.id)) return false;
 
-    const context = stateContextFor(pending.item);
+    const context = stateContextFor(pending);
     if (BLOCKED_CONTEXT.some(word => context.includes(word))) {
-      if (!refusedWithoutARow.has(pending.item.id)) {
-        refusedWithoutARow.add(pending.item.id);
-        appendLog(new Date().toLocaleTimeString(), `refused ${pending.item.toolName || 'a prompt'}`);
+      if (!refusedWithoutARow.has(pending.id)) {
+        refusedWithoutARow.add(pending.id);
+        appendLog(new Date().toLocaleTimeString(), `refused ${pending.toolName || 'a prompt'}`);
+        console.warn(`[Auto FDE] ${pending.toolName} is on the block list`);
       }
       return false;
     }
     const cat = categoryFor(context);
-    if (!cat.enabled) return false;
+    if (!cat.enabled) return decline(`the ${cat.id} category is unticked`);
 
-    // Only the response changes. Everything else on the item is the page's, and
-    // rewriting any of it would be rewriting somebody's transcript.
-    const item = Object.assign({}, pending.item, { toolResponse: response });
-    if (!sendEvent(found.store, { type: UPSERT_EVENT, contextItem: item })) return false;
+    // Only the response changes. Everything else on the item belongs to the page,
+    // and rewriting any of it would be rewriting somebody's transcript.
+    const item = Object.assign({}, pending, { toolResponse: response });
+    if (!writeAnswer(store, { type: UPSERT_EVENT, contextItem: item })) return false;
 
-    // Verified rather than assumed. If the store did not take it, say so once and
-    // leave the prompt alone: a half-answered prompt is worse than a waiting one.
-    const now = safeSnapshot(found.store);
-    const holder = now && now.contextMap ? findToolResponse(now.contextMap[pending.item.id], 0) : null;
-    const settled = holder && JSON.stringify(holder.toolResponse) === JSON.stringify(response);
-    if (!settled) {
-      if (!reportedStateFailure) {
-        reportedStateFailure = true;
-        appendLog(new Date().toLocaleTimeString(), 'the session would not take the answer');
-        console.warn('[Auto FDE] state approval: the store did not take the answer.');
-      }
+    // Verified rather than assumed. A half-answered prompt is worse than a
+    // waiting one, so a write the store did not take is reported and left alone.
+    const now = snapshotOf(store);
+    const holder = now && now.contextMap ? findToolResponse(now.contextMap[pending.id], 0) : null;
+    if (!holder || JSON.stringify(holder.toolResponse) !== JSON.stringify(response)) {
+      // Recorded against the item, not just reported, so a write the session
+      // ignores is attempted once rather than every second for as long as the
+      // prompt is up.
+      failedToAnswer.add(pending.id);
+      appendLog(new Date().toLocaleTimeString(), 'the session would not take the answer');
+      console.warn(`[Auto FDE] ${pending.toolName} was answered and the session did not take it.`);
       return false;
     }
 
-    // The click sends changeRequestStatus after the upsert, which is what
+    // A click sends changeRequestStatus after the upsert, and that is what
     // startAgentLoop does, so the loop is started rather than the status forged.
-    const start = findFn(anchor, 'startAgentLoop');
+    const start = propFrom(anchor, ['startAgentLoop'], 'function');
     if (start) {
       try {
         start();
       } catch (err) {
-        console.warn(`[Auto FDE] state approval: startAgentLoop threw: ${err.message}`);
+        console.warn(`[Auto FDE] the session's agent loop would not start: ${err.message}`);
       }
     } else {
-      console.warn('[Auto FDE] state approval: no startAgentLoop in reach.');
+      console.warn('[Auto FDE] no way to start the agent loop is in reach.');
     }
-    record(pending.item.toolName || 'prompt', `${cat.id} · no row`);
+    record(pending.toolName || 'prompt', `${cat.id} · no row`);
     return true;
   }
 
-  function probeFrom(el, what) {
-    let fiber = fiberFor(el);
-    if (!fiber) {
-      console.warn('[Auto FDE] probe: no React fiber on ' + what
-        + '. The page may not be React, or the key has changed.');
-      return 'no fiber';
-    }
-
-    const lines = [`[Auto FDE] probe: walking up from ${what}`];
-    for (let level = 0; fiber && level < PROBE_LEVELS; level++, fiber = fiber.return) {
-      const props = fiber.memoizedProps;
-      if (!props || typeof props !== 'object') {
-        lines.push(`  ${level} ${fiberName(fiber)}`);
-        continue;
-      }
-      const keys = Object.keys(props);
-      const handlers = keys.filter(key => typeof props[key] === 'function');
-      const interesting = keys.filter(key =>
-        typeof props[key] !== 'function' && PROBE_INTERESTING.test(key));
-      lines.push(`  ${level} ${fiberName(fiber)}`
-        + (handlers.length ? `\n      fns: ${handlers.join(', ')}` : '')
-        + (interesting.length
-          ? `\n      props: ${interesting.map(k => `${k}=${describeValue(props[k])}`).join(', ')}`
-          : '')
-        + stateShapes(fiber).map(shape => `\n      ${shape}`).join(''));
-    }
-    console.log(lines.join('\n'));
-    return 'probed';
-  }
 
   // ---------- UI panel ----------
   // The panel lives in a shadow root. It is injected into somebody else's
@@ -1259,17 +741,6 @@
             <span>Automatically resume after a network error</span>
           </label>
           <div class="hint">Tells the agent to carry on once the connection is back.</div>
-          <label class="row" style="margin-top:5px">
-            <input type="checkbox" id="af-visible" checked>
-            <span>Tell the page the tab is visible</span>
-          </label>
-          <div class="hint">Stops Foundry standing down while you work elsewhere.</div>
-          <label class="row" style="margin-top:5px">
-            <input type="checkbox" id="af-state">
-            <span>Answer prompts with no button</span>
-          </label>
-          <div class="hint">Writes the answer into the session's own state, which is
-            the only thing that reaches a prompt in a background tab.</div>
         </div>
 
         <div class="sec">
@@ -1335,23 +806,11 @@
   autoResumeEnabled = resumeBox.checked;
   if (autoResumeEnabled) reportResume('watching');
 
-  // Ticked by default, because working in another tab is the reason this exists
-  // and it costs nothing when the tab is in front.
-  // Unticked by default, and the only setting here that is. It writes into a live
-  // session rather than pressing something the page put there, and that is a
-  // decision to take deliberately rather than one to inherit from a default.
-  const stateBox = shadow.querySelector('#af-state');
-  stateBox.onchange = e => {
-    stateApprovals = e.target.checked;
-    console.log(`[Auto FDE] answer prompts with no button: ${stateApprovals ? 'On' : 'Off'}`);
-  };
-  stateApprovals = stateBox.checked;
-
-  const visibleBox = shadow.querySelector('#af-visible');
-  visibleBox.onchange = e => {
-    e.target.checked ? startVisibilitySpoof() : stopVisibilitySpoof();
-  };
-  if (visibleBox.checked) startVisibilitySpoof();
+  // Neither answering a prompt with no button nor telling the page it is in front
+  // is a preference. The first is the job; the second is how the page is kept
+  // from deferring its own work. A setting only earns its place when the answer
+  // could reasonably be no, which is why the two above have one and these do not.
+  startVisibilitySpoof();
 
   // The panel remembers where it was put and whether it was collapsed. Both go
   // through these, because localStorage throws outright rather than returning
@@ -1485,18 +944,14 @@
     return scroller;
   }
 
-  // What to send when a stall has to be explained. Whether the button is in the
-  // document at all is the one thing that separates a list that has not rendered
-  // the row from a row that is there and not being matched, and it cannot be
-  // read off the panel. Flat text rather than an object, because an object
-  // arrives in the console collapsed and gets reported as "Object". The
-  // visibility comes from the real reader, so the spoof cannot lie in a
-  // diagnostic.
-  // allowByText is counted separately and from textContent, which needs no
-  // rendering of any kind. A button reported by it and not by the labels beside
-  // it is a button that is in the document and is not being matched, which is a
-  // bug here. Neither of them finding anything is the page not having put the
-  // row in the document, which is not.
+  // What a stall looks like from inside. Whether there is an Allow button in the
+  // document at all separates a list that has not rendered the row from a row
+  // that is there and is not being matched, and nothing in the panel says which.
+  // Flat text, because an object arrives in the console collapsed and comes back
+  // quoted as "Object". allowByText counts textContent matches, which need no
+  // rendering, so a row that is present but unmatched cannot be mistaken for one
+  // that is absent. Visibility comes from the real reader, so the spoof cannot
+  // lie in a diagnostic.
   function stallReport() {
     const buttons = Array.from(document.querySelectorAll('button'));
     const labels = buttons.map(labelFor).filter(t => /allow/i.test(t));
@@ -1511,7 +966,7 @@
     // The state route goes first and on its own clock. It is not scrolling and
     // must not inherit the jump backoff: a prompt that can be answered outright
     // should not wait thirty seconds because five scrolls failed before it.
-    if (stateApprovals && now - lastStateTryAt >= STATE_INTERVAL_MS) {
+    if (now - lastStateTryAt >= STATE_INTERVAL_MS) {
       lastStateTryAt = now;
       const pendingMarker = findPendingMarker();
       if (pendingMarker && answerWithoutARow(pendingMarker)) {
@@ -1534,6 +989,11 @@
     if (label !== lastMarkerText) {
       lastMarkerText = label;
       resetJumps();
+      // The console changes route without reloading, so a session left behind
+      // keeps a store nobody is looking at. A new pill is the cheapest honest
+      // moment to look the store up again, rather than walking two hundred
+      // components every second on the chance that it moved.
+      knownStore = null;
     }
 
     jumpAttempts++;
@@ -1549,13 +1009,7 @@
       reportedStall = true;
       appendLog(new Date().toLocaleTimeString(), 'off-screen prompt still out of reach');
       console.warn(`[Auto FDE] off-screen prompt still out of reach; slowing down. ${stallReport()}`);
-      // The state as it stands with the row missing. That is the only moment
-      // worth mapping, and the one moment nobody can be at the console for.
-      probeFrom(marker, 'the pending pill, with no row in the document');
-      probeStore();
-      return;
     }
-    console.log(`[Auto FDE] a prompt is pending off screen; went to it (attempt ${jumpAttempts})`);
   }
 
   function scan() {
@@ -1588,16 +1042,8 @@
         // whether or not anyone is watching.
         clicked.add(btn);
         btn.style.outline = '2px solid #4ade80';
-        // Before the click, not after. The page's own handler sends the grant
-        // synchronously, so a window opened after the click has already missed
-        // the request it was opened to catch. The probe is before it for the same
-        // reason: the row unmounts once the prompt is answered.
-        markApprovalClick();
-        if (!probedAClick) {
-          probedAClick = true;
-          probeFrom(btn, 'the Allow button being pressed');
-        }
-        installStoreWatch(btn);
+        // Before the click, because the row unmounts as soon as the prompt is
+        // answered and the item's response has to be read while it is still there.
         noteGrantBefore(btn);
         btn.click();
         record(label, cat.id);
@@ -1706,12 +1152,6 @@
     }));
   });
 
-  window.__autoFde = {
-    show: () => { host.style.display = 'block'; },
-    stop: () => stopBtn.click(),
-    watchTraffic,
-    probeApproval,
-    probeStore,
-  };
+  window.__autoFde = { show: () => { host.style.display = 'block'; }, stop: () => stopBtn.click() };
   console.log('[Auto FDE] Running on', location.href);
 })();
