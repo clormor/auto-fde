@@ -544,12 +544,109 @@
     console.log(`[Auto FDE] ${t} — auto-sent resume message`);
   }
 
+  // ---------- Reaching a prompt that is not on the page ----------
+  // The transcript is a windowed list: rows outside the range it has rendered
+  // are not in the document at all. An approval that arrives while the user is
+  // scrolled up therefore has no button for the scan to find and produces no
+  // mutation for the observer to react to, and no amount of waiting changes
+  // that. That is the whole of the bug this exists to fix: the count would sit
+  // still for minutes and then move the moment somebody scrolled the tab, which
+  // is exactly what an unattended session cannot rely on happening.
+  //
+  // The page does leave one thing behind that is always rendered: the pill it
+  // floats over the transcript to say an approval is pending. Pressing that is
+  // the page's own way back to the row. Putting the transcript at the bottom as
+  // well is the way that still works in a tab Chrome has stopped painting,
+  // because assigning scrollTop needs no frame whereas a smooth scroll does.
+  const PENDING_PROMPT = /waiting for (tool )?approval/i;
+  // Long enough for the list to render the row it was sent to, short enough that
+  // a prompt is not left sitting. It is the distance between two Date.now()
+  // readings taken inside the observer callback, not a timer, so throttling in a
+  // hidden tab cannot stretch it.
+  const JUMP_INTERVAL_MS = 1500;
+  // A prompt still out of reach after this many attempts is reported rather than
+  // chased. Without the cap, a pill the page leaves up for something this script
+  // will never press would take the scrollbar off the user for good.
+  const MAX_JUMPS = 5;
+  let lastJumpAt = 0, jumpAttempts = 0, gaveUp = false, scroller = null;
+
+  function resetJumps() { jumpAttempts = 0; gaveUp = false; }
+
+  // The pill is found by its text rather than a class, because the class is
+  // Foundry's and the sentence is the product's. A TreeWalker does not cross a
+  // shadow boundary, so the panel's own log cannot match itself.
+  function findPendingMarker() {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!PENDING_PROMPT.test(node.nodeValue || '')) continue;
+      const el = node.parentElement;
+      if (!el) continue;
+      return el.closest('button, [role="button"], a') || el;
+    }
+    return null;
+  }
+
+  // The transcript is the tallest thing on the page with a scrollbar of its own.
+  // The result is cached because finding it costs a computed style per
+  // candidate, and it is only looked for again if the page swaps it out. The
+  // floor on clientHeight is what keeps a small scrolling widget with a lot of
+  // content in it from winning on scroll room alone.
+  function findScroller() {
+    if (scroller && scroller.isConnected && scroller.scrollHeight > scroller.clientHeight) {
+      return scroller;
+    }
+    scroller = null;
+    let most = 0;
+    document.querySelectorAll('div, main, section, ul, ol').forEach(el => {
+      const room = el.scrollHeight - el.clientHeight;
+      if (room <= most || el.clientHeight < 200) return;
+      const overflow = getComputedStyle(el).overflowY;
+      if (overflow !== 'auto' && overflow !== 'scroll') return;
+      most = room;
+      scroller = el;
+    });
+    return scroller;
+  }
+
+  function reachPendingPrompt() {
+    const now = Date.now();
+    if (now - lastJumpAt < JUMP_INTERVAL_MS) return;
+    lastJumpAt = now;
+
+    const marker = findPendingMarker();
+    if (!marker) { resetJumps(); return; }
+
+    // Still pending after every attempt. Say so once and leave the page alone:
+    // this is a failure the user can act on, by scrolling to the prompt.
+    if (jumpAttempts >= MAX_JUMPS) {
+      if (!gaveUp) {
+        gaveUp = true;
+        appendLog(new Date().toLocaleTimeString(), 'could not reach an off-screen prompt');
+        console.warn('[Auto FDE] a prompt is pending off screen and will not come into reach.');
+      }
+      return;
+    }
+
+    jumpAttempts++;
+    marker.click();
+    const box = findScroller();
+    if (box) box.scrollTop = box.scrollHeight;
+    console.log(`[Auto FDE] a prompt is pending off screen; went to it (${jumpAttempts}/${MAX_JUMPS})`);
+  }
+
   function scan() {
     if (active) {
+      // Whether there is a prompt on the page at all, which is what decides
+      // between waiting and going to fetch one. A prompt this script will not
+      // press still counts as one it can see: reachPendingPrompt() moves the
+      // transcript, and doing that every couple of seconds for as long as a
+      // deliberately refused prompt is up would fight the user for the scrollbar.
+      let sawPrompt = false;
       document.querySelectorAll('button').forEach(btn => {
+        const label = (btn.innerText || btn.getAttribute('aria-label') || '').trim();
+        if (!label || !TARGET_LABELS.includes(label.toLowerCase())) return;
+        sawPrompt = true;
         if (clicked.has(btn) || btn.disabled) return;
-        const text = (btn.innerText || btn.getAttribute('aria-label') || '').trim().toLowerCase();
-        if (!text || !TARGET_LABELS.includes(text)) return;
         const context = promptContextFor(btn);
         if (BLOCKED_CONTEXT.some(word => context.includes(word))) return;
         const cat = categoryFor(context);
@@ -563,11 +660,12 @@
         // callbacks are not throttled, so clicking from inside this one works
         // whether or not anyone is watching.
         clicked.add(btn);
-        const label = (btn.innerText || btn.getAttribute('aria-label') || '').trim();
         btn.style.outline = '2px solid #4ade80';
         btn.click();
         record(label, cat.id);
+        resetJumps();
       });
+      if (!sawPrompt) reachPendingPrompt();
     }
     if (autoResumeEnabled && !recovering) {
       const banner = findErrorBanner();

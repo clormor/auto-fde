@@ -60,6 +60,12 @@ Two settings sit below the categories:
   chat telling the agent to carry on, and sends it. Every send is in the panel's
   log. Untick it if you would rather nothing was said on your behalf.
 
+If a prompt arrives while you are scrolled up the transcript, the panel scrolls
+you to the bottom to reach it. Foundry only keeps the part of a long session you
+are looking at on the page, so there is no other way to press a button that is
+not there. If it cannot get to one, the log says so and you can scroll to it
+yourself.
+
 **Stop** shuts it down, and so does reloading the page. Press the toolbar button
 again to start it back up.
 
@@ -78,5 +84,12 @@ look for an **Errors** button on it. Those errors do not appear in the page's
 DevTools console, and neither does anything this extension logs: that goes to
 the **service worker** console, reached by the link of that name on the same
 card.
+
+**A prompt sitting unanswered.** The panel goes and gets prompts that are off
+screen, so this should be rare. When it happens the log line reads `could not
+reach an off-screen prompt`: scroll to the prompt and it will be pressed. A
+prompt that stays put once it is in front of you is one the panel is refusing,
+either because its category is unticked or because the prompt mentions deleting,
+forcing or production.
 
 Anything beyond that is in [DEVELOPER.md](DEVELOPER.md).
