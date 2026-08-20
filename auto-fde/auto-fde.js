@@ -665,6 +665,7 @@
   // worth being slow about.
   const PENDING_STATE = /pending/i;
   const ITEM_SEARCH_DEPTH = 4;
+  const EVENT_SAMPLE = 6;
 
   function looksLikeStore(value) {
     return !!value && typeof value === 'object'
@@ -674,9 +675,34 @@
 
   // The store hides in the same two places the setters do, so the search is the
   // one stateShapes() reports from, narrowed to what answers like a store.
+  //
+  // STORE_LEVELS is not PROBE_LEVELS and the difference cost a whole run. Forty
+  // levels is a readable amount to print and it reaches the store from the pill,
+  // which sits near the root. From a transcript row the store is far further up,
+  // past the row, the sortable list and the rest, so a search capped at forty
+  // found nothing and reported that no store existed. A search goes to the root;
+  // only the printing is capped.
+  const STORE_LEVELS = 200;
+  let knownStore = null, storeSearchWarned = false;
+
+  // Cached, because it is the same store every time and the walk is not free.
+  function getStore(el) {
+    if (knownStore) return knownStore;
+    const found = findStore(el);
+    if (found) {
+      knownStore = found;
+      return found;
+    }
+    if (!storeSearchWarned) {
+      storeSearchWarned = true;
+      console.warn('[Auto FDE] store: none reachable from the prompt.');
+    }
+    return null;
+  }
+
   function findStore(el) {
     let fiber = fiberFor(el);
-    for (let level = 0; fiber && level < PROBE_LEVELS; level++, fiber = fiber.return) {
+    for (let level = 0; fiber && level < STORE_LEVELS; level++, fiber = fiber.return) {
       const props = fiber.memoizedProps;
       if (props && typeof props === 'object' && looksLikeStore(props.value)) {
         return { store: props.value, where: `${level} ${fiberName(fiber)} value` };
@@ -714,11 +740,8 @@
       console.warn('[Auto FDE] store: nothing pending to start from.');
       return 'nothing pending';
     }
-    const found = findStore(anchor.el);
-    if (!found) {
-      console.warn(`[Auto FDE] store: no store reachable from ${anchor.what}.`);
-      return 'no store';
-    }
+    const found = getStore(anchor.el);
+    if (!found) return 'no store';
 
     const lines = [`[Auto FDE] store: found at ${found.where}, from ${anchor.what}`];
     lines.push(`  store: ${describeValue(found.store)}`);
@@ -731,6 +754,15 @@
       ['events', 'effectHandlers', 'contextItems'].forEach(key => {
         if (agent[key] != null) lines.push(`  agent.${key}: ${describeValue(agent[key])}`);
       });
+      // agent.events came back as array[35]. If those are the events the agent
+      // has seen rather than the ones it accepts, one of them is an approval
+      // already granted in this session, and the vocabulary needs no click to
+      // learn. The tail, because the recent ones are the relevant ones.
+      if (Array.isArray(agent.events)) {
+        agent.events.slice(-EVENT_SAMPLE).forEach((event, i) => {
+          lines.push(`  agent.events[-${EVENT_SAMPLE - i}]: ${describeArg(event)}`);
+        });
+      }
     }
 
     let snapshot = null;
@@ -784,12 +816,12 @@
 
   function installStoreWatch(el) {
     if (storeWatched) return;
+    const found = getStore(el);
+    // Not latched on failure. Latching before the search is what turned one bad
+    // search into a run with no watch at all and no second attempt at getting
+    // one.
+    if (!found) return;
     storeWatched = true;
-    const found = findStore(el);
-    if (!found) {
-      console.warn('[Auto FDE] store watch: no store reachable from the prompt.');
-      return;
-    }
 
     const wrap = (owner, name, label) => {
       const real = owner[name];
@@ -812,6 +844,64 @@
     if (found.store.agent) wrap(found.store.agent, 'onEvent', 'agent.onEvent');
     console.log(`[Auto FDE] store watch on at ${found.where}.`
       + ' The next Allow will show what it sends.');
+  }
+
+  // ---------- Reading the grant out of the store ----------
+  // The shortest route to what an approval actually sets, and it needs no
+  // vocabulary: read the pending item's toolResponse from the store immediately
+  // before a click, then read the same item again once the page has answered.
+  // The difference is the target state, stated by the application rather than
+  // guessed at. `pending_approval` is known; what replaces it is not.
+  const GRANT_LIMIT = 400;
+  let awaitingGrant = null, grantRead = false;
+
+  function safeSnapshot(store) {
+    try {
+      return store.getSnapshot();
+    } catch (err) {
+      console.warn(`[Auto FDE] store: getSnapshot threw: ${err.message}`);
+      return null;
+    }
+  }
+
+  // The item sits under content in what goes over the wire and at the top level
+  // in the store, so neither depth is assumed.
+  function findToolResponse(value, depth) {
+    if (!value || typeof value !== 'object' || depth > ITEM_SEARCH_DEPTH) return null;
+    if (value.toolResponse) return value;
+    for (const key of Object.keys(value)) {
+      const found = findToolResponse(value[key], depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  function noteGrantBefore(el) {
+    if (grantRead || awaitingGrant) return;
+    const found = getStore(el);
+    if (!found) return;
+    const snapshot = safeSnapshot(found.store);
+    const pending = snapshot && findPendingItem(snapshot.contextMap, 'contextMap', 0);
+    if (!pending || !pending.item.id) return;
+    awaitingGrant = {
+      id: pending.item.id,
+      before: shorten(JSON.stringify(pending.item.toolResponse), GRANT_LIMIT),
+    };
+  }
+
+  function readGrantAfter() {
+    if (!awaitingGrant || !knownStore) return;
+    const snapshot = safeSnapshot(knownStore.store);
+    const map = snapshot && snapshot.contextMap;
+    const holder = map ? findToolResponse(map[awaitingGrant.id], 0) : null;
+    if (!holder) return;
+    const after = shorten(JSON.stringify(holder.toolResponse), GRANT_LIMIT);
+    if (after === awaitingGrant.before) return;
+    console.log(`[Auto FDE] store grant: item ${awaitingGrant.id}`
+      + `\n  toolResponse before: ${awaitingGrant.before}`
+      + `\n  toolResponse after:  ${after}`);
+    awaitingGrant = null;
+    grantRead = true;
   }
 
   function probeFrom(el, what) {
@@ -1281,6 +1371,9 @@
   }
 
   function scan() {
+    // Cheap, and only does anything at all in the window between a click and the
+    // page having answered it.
+    readGrantAfter();
     if (active) {
       // Whether there is a prompt on the page at all, which is what decides
       // between waiting and going to fetch one. A prompt this script will not
@@ -1317,6 +1410,7 @@
           probeFrom(btn, 'the Allow button being pressed');
         }
         installStoreWatch(btn);
+        noteGrantBefore(btn);
         btn.click();
         record(label, cat.id);
         resetJumps();

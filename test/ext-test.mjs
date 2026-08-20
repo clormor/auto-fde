@@ -95,25 +95,34 @@ const WINDOWED_PAGE = `<!doctype html><html><body style="margin:0">
     const b = document.createElement('button');
     b.id = 'offscreen';
     b.textContent = 'Allow';
+    // State the click changes, so the grant can be read out of the store rather
+    // than guessed at: pending_approval is known, what replaces it is not.
+    const state = {
+      contextMap: { 'item-1': { id: 'item-1', toolResponse: { state: 'pending_approval' } } },
+    };
     const store = {
-      getSnapshot: () => ({ contextMap: {} }),
+      getSnapshot: () => state,
       dispatch: event => { window.__dispatched.push(event); },
       subscribe: () => {},
       agent: { onEvent: event => { window.__dispatched.push(event); } },
     };
+    // The store sits sixty levels above the button, the way it does above a real
+    // transcript row. A search capped at the forty levels that are printed found
+    // nothing here and reported that no store existed.
+    let chain = { type: { displayName: 'AgentStoreProvider' }, memoizedProps: { value: store }, return: null };
+    for (let i = 0; i < 60; i++) {
+      chain = { type: { name: 'Filler' + i }, memoizedProps: {}, return: chain };
+    }
     b['__reactFiber$mock'] = {
       type: { name: 'ToolApprovalRow' },
       memoizedProps: { onApprove: () => {}, itemId: 'item-1' },
-      return: {
-        type: { displayName: 'AgentStoreProvider' },
-        memoizedProps: { value: store },
-        return: null,
-      },
+      return: chain,
     };
     // What the page does when the button is pressed. The watch has to read this
     // without changing it, which is why the payload is checked as well.
     b.addEventListener('click', () => {
       store.dispatch({ type: 'toolApprovalGranted', itemId: 'item-1' });
+      state.contextMap['item-1'].toolResponse = { state: 'executing' };
     });
     row.appendChild(b);
     box.appendChild(row);
@@ -850,6 +859,10 @@ const collectClickProbe = msg => probedClick.push(msg.text());
 p6.on('console', collectClickProbe);
 await p6.evaluate(SCRIPT);
 await p6.waitForTimeout(600);
+// The grant is read on the scan after the click, so give the observer something
+// to fire on rather than waiting out the backstop timer.
+await p6.evaluate(() => document.body.appendChild(document.createElement('span')));
+await p6.waitForTimeout(300);
 p6.off('console', collectClickProbe);
 // A console command cannot be timed against a hidden tab, so the probe runs
 // itself: once from the first Allow this panel presses, which is the mounted
@@ -861,10 +874,22 @@ check('the first press probes the state without being asked',
     && clickProbe[0].includes('fns: onApprove'),
   JSON.stringify(clickProbe));
 const storeWatch = probedClick.filter(t => t.startsWith('[Auto FDE] store '));
-check('the store watch reads what the click sends into the store',
+// The store sits sixty levels above the button in this page. A search capped at
+// the forty levels that get printed reported no store at all, which cost a whole
+// run against a real session.
+check('the store is found however far above the prompt it sits',
   storeWatch.some(t => t.includes('store watch on at'))
-    && storeWatch.some(t => t.includes('store dispatch: type="toolApprovalGranted"')
-      && t.includes('{type, itemId}')),
+    && !storeWatch.some(t => t.includes('none reachable')),
+  JSON.stringify(storeWatch));
+check('the store watch reads what the click sends into the store',
+  storeWatch.some(t => t.includes('store dispatch: type="toolApprovalGranted"')
+    && t.includes('{type, itemId}')),
+  JSON.stringify(storeWatch));
+// The shortest route to what an approval sets, needing no vocabulary at all.
+check('the grant is read out of the store, before against after',
+  storeWatch.some(t => t.includes('store grant: item item-1')
+    && t.includes('before: {"state":"pending_approval"}')
+    && t.includes('after:  {"state":"executing"}')),
   JSON.stringify(storeWatch));
 check('the store watch passes the event through untouched',
   (await p6.evaluate(() => window.__dispatched)).length === 1

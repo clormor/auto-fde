@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  87 assertions: the in-page script and the packaged
+npm run test:browser  89 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -440,6 +440,24 @@ the traffic watch: wrap `dispatch` and `agent.onEvent`, pass everything through
 untouched, and log only inside the window a click opens. Installed from the button
 about to be pressed, so the click that follows is the one read. Stop puts both
 back, and a test asserts the payload still arrives unchanged.
+
+**`STORE_LEVELS` is not `PROBE_LEVELS`, and confusing them cost a run.** Forty
+levels is a readable amount to print and it reaches the store from the pill,
+which sits near the root. From a transcript row the store is far further up, past
+the row and the sortable list and the rest of it, so a search capped at forty
+found nothing and reported that no store existed at all. The search goes to the
+root; only the printing is capped. `installStoreWatch()` also no longer latches
+before the search succeeds, which is what turned one bad search into a run with
+no watch and no second attempt. A test puts the store sixty levels above the
+button.
+
+**Reading the grant out of the store is the shortest route and needs no
+vocabulary.** `noteGrantBefore()` records the pending item's `toolResponse`
+immediately before a click and `readGrantAfter()` reads the same item on the next
+scan. The difference is the target state, stated by the application rather than
+guessed at: `pending_approval` was known from the traffic capture, what replaces
+it was not. That plus a mounted `handleUpdateContextItem` is enough to answer a
+prompt without a row, and neither needs the event vocabulary at all.
 
 `markApprovalClick()` opens that window whether or not the traffic watch is on.
 It used to return early unless `watching`, which meant the store watch could
