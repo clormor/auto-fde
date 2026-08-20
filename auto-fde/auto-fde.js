@@ -418,7 +418,7 @@
         </div>
 
         <div class="sec">
-          <div class="cap">Recent <span class="hint">last <span id="af-log-limit"></span></span></div>
+          <div class="cap">Recent clicks</div>
           <div class="log" id="af-log"></div>
         </div>
 
@@ -433,9 +433,6 @@
   const toggleBtn = shadow.querySelector('#af-toggle');
   const stopBtn = shadow.querySelector('#af-stop');
   const collapseBtn = shadow.querySelector('#af-collapse');
-
-
-  shadow.querySelector('#af-log-limit').textContent = LOG_LIMIT;
 
   CATEGORIES.forEach(c => {
     const row = document.createElement('label');
