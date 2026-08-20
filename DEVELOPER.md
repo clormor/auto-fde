@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  85 assertions: the in-page script and the packaged
+npm run test:browser  87 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -415,6 +415,36 @@ item nested under `content`.
 
 It reads and reports and does not write. Dispatching a guessed action into
 somebody's live session is the thing worth being slow about.
+
+**What it found, from a hidden tab.** The store is at level 32 as a context
+value, and the pending item is in it:
+
+```
+store: {__enqueueEffect, __setState, agent, dispatch, getSnapshot, subscribe}
+agent: {contextItems, effectHandlers, events, onEvent}
+snapshot: {agentStatus, agentSystemPrompt, contextMap, contextOrder, modeConfig,
+           modelConfiguration, name, requestStatus, sessionState,
+           toolConfigurations, todoItems}
+pending item: at contextMap.d8ca7545-e5ff-40af-9f0a-0d7be90ed2a3
+  toolName: "build_datasets"
+  toolResponse: {"state":"pending_approval"}
+```
+
+That id is the same one the mounted walk reports as `toolUseId` and as
+`maybePendingUserActionContextItemId`. So the state route has everything the DOM
+route has, with no row in the document. `agent` takes events rather than offering
+methods, which is what `agent.onEvent` and `agent.events` say.
+
+**The store watch is how the event gets known rather than guessed.** Same trick as
+the traffic watch: wrap `dispatch` and `agent.onEvent`, pass everything through
+untouched, and log only inside the window a click opens. Installed from the button
+about to be pressed, so the click that follows is the one read. Stop puts both
+back, and a test asserts the payload still arrives unchanged.
+
+`markApprovalClick()` opens that window whether or not the traffic watch is on.
+It used to return early unless `watching`, which meant the store watch could
+never log anything unless somebody had also turned the traffic watch on. Only the
+line about traffic belongs to the traffic watch.
 
 One trap in testing it. Only props whose names match `PROBE_INTERESTING` are
 reported at all, so asserting that the contents of a prop named `transcript` do

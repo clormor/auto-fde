@@ -428,11 +428,15 @@
     });
   }
 
-  // Called when a prompt is clicked, so the log says which requests followed it.
+  // Called when a prompt is clicked, so the log says what followed it. The window
+  // opens whether or not the traffic watch is on, because the store watch reads
+  // from the same window and has its own reason to exist. Only the line about
+  // traffic belongs to the traffic watch.
   function markApprovalClick() {
-    if (!watching) return;
     capturingUntil = Date.now() + CLICK_WINDOW_MS;
-    console.log('[Auto FDE] traffic: --- Allow clicked, what follows is the grant ---');
+    if (watching) {
+      console.log('[Auto FDE] traffic: --- Allow clicked, what follows is the grant ---');
+    }
   }
 
   function watchTraffic(options) {
@@ -718,7 +722,16 @@
 
     const lines = [`[Auto FDE] store: found at ${found.where}, from ${anchor.what}`];
     lines.push(`  store: ${describeValue(found.store)}`);
-    lines.push(`  agent: ${describeValue(found.store.agent)}`);
+    const agent = found.store.agent;
+    lines.push(`  agent: ${describeValue(agent)}`);
+    // agent came back as {contextItems, effectHandlers, events, onEvent}, so it
+    // takes events rather than offering methods. If the event names are in there,
+    // they are the vocabulary, and one of them answers a prompt.
+    if (agent && typeof agent === 'object') {
+      ['events', 'effectHandlers', 'contextItems'].forEach(key => {
+        if (agent[key] != null) lines.push(`  agent.${key}: ${describeValue(agent[key])}`);
+      });
+    }
 
     let snapshot = null;
     try {
@@ -728,10 +741,11 @@
     }
     if (snapshot && typeof snapshot === 'object') {
       lines.push(`  snapshot: ${describeValue(snapshot)}`);
-      // Short enumerations, safe to print, and they say whether the loop is
-      // waiting on the user or on something else.
+      // Neither of these printed on the first run, because both were being
+      // reported only when they were strings and neither is one. Their shape is
+      // what says whether the loop is waiting on the user or on something else.
       ['agentStatus', 'requestStatus'].forEach(key => {
-        if (typeof snapshot[key] === 'string') lines.push(`  ${key}: ${snapshot[key]}`);
+        if (snapshot[key] != null) lines.push(`  ${key}: ${describeValue(snapshot[key])}`);
       });
       if (Array.isArray(snapshot.contextOrder)) {
         lines.push(`  contextOrder: ${snapshot.contextOrder.length} ids`);
@@ -748,6 +762,56 @@
     }
     console.log(lines.join('\n'));
     return 'probed';
+  }
+
+  // ---------- Store watch ----------
+  // The store takes events and the event that answers a prompt is not guessable,
+  // so the same trick as the traffic watch: let the page send it and read what it
+  // sent. dispatch and agent.onEvent are wrapped, they pass everything through
+  // untouched, and they only log inside the window a click opens, which is what
+  // separates the grant from everything else the session is doing.
+  //
+  // Installed from the button about to be pressed, so the click that follows is
+  // the one that gets read. Stop puts both back.
+  let storeWatched = false;
+
+  function describeArg(value) {
+    if (!value || typeof value !== 'object') return describeValue(value);
+    const type = value.type;
+    const head = typeof type === 'string' ? `type=${JSON.stringify(type)} ` : '';
+    return `${head}${describeValue(value)}`;
+  }
+
+  function installStoreWatch(el) {
+    if (storeWatched) return;
+    storeWatched = true;
+    const found = findStore(el);
+    if (!found) {
+      console.warn('[Auto FDE] store watch: no store reachable from the prompt.');
+      return;
+    }
+
+    const wrap = (owner, name, label) => {
+      const real = owner[name];
+      if (typeof real !== 'function') return;
+      try {
+        owner[name] = function (...args) {
+          if (Date.now() < capturingUntil) {
+            console.log(`[Auto FDE] store ${label}: ${args.map(describeArg).join(' , ')}`);
+          }
+          return real.apply(this, args);
+        };
+      } catch (err) {
+        console.warn(`[Auto FDE] store watch: could not wrap ${label}: ${err.message}`);
+        return;
+      }
+      teardown.push(() => { owner[name] = real; });
+    };
+
+    wrap(found.store, 'dispatch', 'dispatch');
+    if (found.store.agent) wrap(found.store.agent, 'onEvent', 'agent.onEvent');
+    console.log(`[Auto FDE] store watch on at ${found.where}.`
+      + ' The next Allow will show what it sends.');
   }
 
   function probeFrom(el, what) {
@@ -1252,6 +1316,7 @@
           probedAClick = true;
           probeFrom(btn, 'the Allow button being pressed');
         }
+        installStoreWatch(btn);
         btn.click();
         record(label, cat.id);
         resetJumps();

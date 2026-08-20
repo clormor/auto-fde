@@ -83,6 +83,7 @@ const WINDOWED_PAGE = `<!doctype html><html><body style="margin:0">
   // would be, so the only way to this prompt is the scroll. Every scroll is
   // recorded: one that arrives in a single step was not animated.
   window.__scrolls = [];
+  window.__dispatched = [];
   document.getElementById('scroller').addEventListener('scroll', () => {
     const box = document.getElementById('scroller');
     window.__scrolls.push(box.scrollTop);
@@ -94,11 +95,26 @@ const WINDOWED_PAGE = `<!doctype html><html><body style="margin:0">
     const b = document.createElement('button');
     b.id = 'offscreen';
     b.textContent = 'Allow';
+    const store = {
+      getSnapshot: () => ({ contextMap: {} }),
+      dispatch: event => { window.__dispatched.push(event); },
+      subscribe: () => {},
+      agent: { onEvent: event => { window.__dispatched.push(event); } },
+    };
     b['__reactFiber$mock'] = {
       type: { name: 'ToolApprovalRow' },
       memoizedProps: { onApprove: () => {}, itemId: 'item-1' },
-      return: null,
+      return: {
+        type: { displayName: 'AgentStoreProvider' },
+        memoizedProps: { value: store },
+        return: null,
+      },
     };
+    // What the page does when the button is pressed. The watch has to read this
+    // without changing it, which is why the payload is checked as well.
+    b.addEventListener('click', () => {
+      store.dispatch({ type: 'toolApprovalGranted', itemId: 'item-1' });
+    });
     row.appendChild(b);
     box.appendChild(row);
     document.getElementById('pill').remove();
@@ -844,6 +860,16 @@ check('the first press probes the state without being asked',
     && clickProbe[0].includes('the Allow button being pressed')
     && clickProbe[0].includes('fns: onApprove'),
   JSON.stringify(clickProbe));
+const storeWatch = probedClick.filter(t => t.startsWith('[Auto FDE] store '));
+check('the store watch reads what the click sends into the store',
+  storeWatch.some(t => t.includes('store watch on at'))
+    && storeWatch.some(t => t.includes('store dispatch: type="toolApprovalGranted"')
+      && t.includes('{type, itemId}')),
+  JSON.stringify(storeWatch));
+check('the store watch passes the event through untouched',
+  (await p6.evaluate(() => window.__dispatched)).length === 1
+    && (await p6.evaluate(() => window.__dispatched[0].itemId)) === 'item-1');
+
 check('a prompt the list had not rendered is reached and approved',
   (await p6.evaluate(() => window.__hits)).includes('offscreen'),
   JSON.stringify(await p6.evaluate(() => window.__hits)));
@@ -918,7 +944,7 @@ check('a stall reads the store and reports what it answers to',
   storeProbe.length === 1
     && storeProbe[0].includes('store: {respondToToolCall, contextMap, getSnapshot')
     && storeProbe[0].includes('agent: {respondToPendingUserAction, startAgentLoop}')
-    && storeProbe[0].includes('agentStatus: waiting_for_user'),
+    && storeProbe[0].includes('agentStatus: "waiting_for_user"'),
   JSON.stringify(storeProbe[0] || null));
 check('the store probe finds the pending item wherever it is nested',
   storeProbe[0]
