@@ -94,6 +94,11 @@ const WINDOWED_PAGE = `<!doctype html><html><body style="margin:0">
     const b = document.createElement('button');
     b.id = 'offscreen';
     b.textContent = 'Allow';
+    b['__reactFiber$mock'] = {
+      type: { name: 'ToolApprovalRow' },
+      memoizedProps: { onApprove: () => {}, itemId: 'item-1' },
+      return: null,
+    };
     row.appendChild(b);
     box.appendChild(row);
     document.getElementById('pill').remove();
@@ -159,6 +164,18 @@ const DEAD_PILL_PAGE = `<!doctype html><html><body>
   document.addEventListener('click', e => {
     if (e.target.tagName === 'BUTTON' && e.target.id) window.__hits.push(e.target.id);
   }, true);
+
+  // What is still mounted when the row is not. The pill is the only anchor left
+  // in a hidden tab, so the probe has to reach the thread state through it.
+  document.getElementById('deadpill')['__reactFiber$mock'] = {
+    type: { name: 'PendingApprovalPill' },
+    memoizedProps: { onJumpToItem: () => {}, pendingItemId: 'item-9' },
+    return: {
+      type: { displayName: 'ThreadStateProvider' },
+      memoizedProps: { approveToolCall: () => {}, threadItems: ['the whole session'] },
+      return: null,
+    },
+  };
 </script>
 </body></html>`;
 
@@ -555,7 +572,7 @@ await p1.evaluate(() => {
     memoizedProps: {
       approveToolCall: () => {},
       pendingToolCall: { id: 'tc-1', state: 'pending_approval' },
-      transcript: ['every message in the session'],
+      threadItems: ['every message in the session'],
       unrelated: 'ignored',
     },
     return: null,
@@ -576,8 +593,9 @@ check('the probe walks up from the button and names the handlers it finds',
   !!probe && probe.includes('ToolApprovalRow') && probe.includes('fns: onApprove')
     && probe.includes('ThreadStateProvider') && probe.includes('fns: approveToolCall'),
   JSON.stringify(probe || null));
-check('the probe reports shapes, so a transcript prop cannot leak the session',
+check('the probe reports shapes, so a thread prop cannot leak the session',
   !!probe && probe.includes('pendingToolCall={id, state}')
+    && probe.includes('threadItems=array[1]')
     && !probe.includes('every message in the session'),
   JSON.stringify(probe || null));
 
@@ -775,8 +793,21 @@ const MAX_JUMPS = 5;
 const JUMP_INTERVAL_MS = 1500;
 
 const p6 = await mockPage(browser, SESSION_URL, undefined, WINDOWED_PAGE);
+const probedClick = [];
+const collectClickProbe = msg => probedClick.push(msg.text());
+p6.on('console', collectClickProbe);
 await p6.evaluate(SCRIPT);
 await p6.waitForTimeout(600);
+p6.off('console', collectClickProbe);
+// A console command cannot be timed against a hidden tab, so the probe runs
+// itself: once from the first Allow this panel presses, which is the mounted
+// case, and once from the pill on a stall, which is the case that matters.
+const clickProbe = probedClick.filter(t => t.startsWith('[Auto FDE] probe:'));
+check('the first press probes the state without being asked',
+  clickProbe.length === 1
+    && clickProbe[0].includes('the Allow button being pressed')
+    && clickProbe[0].includes('fns: onApprove'),
+  JSON.stringify(clickProbe));
 check('a prompt the list had not rendered is reached and approved',
   (await p6.evaluate(() => window.__hits)).includes('offscreen'),
   JSON.stringify(await p6.evaluate(() => window.__hits)));
@@ -814,16 +845,34 @@ const deadPillPresses = page => page.evaluate(() =>
   window.__hits.filter(h => h === 'deadpill').length);
 
 const p9 = await mockPage(browser, SESSION_URL, undefined, DEAD_PILL_PAGE);
+const probedStall = [];
+const collectStallProbe = msg => probedStall.push(msg.text());
+p9.on('console', collectStallProbe);
 await p9.evaluate(SCRIPT);
 await p9.evaluate(() => {
   window.__nudge = setInterval(() => document.body.appendChild(document.createElement('span')), 100);
 });
 await p9.waitForTimeout(JUMP_INTERVAL_MS * (MAX_JUMPS + 1) + 800);
+p9.off('console', collectStallProbe);
 const deadPresses = await deadPillPresses(p9);
 check(`a pill that leads nowhere is tried ${MAX_JUMPS} times and then slowed down`,
   deadPresses === MAX_JUMPS, `presses=${deadPresses}`);
 check('a prompt still out of reach is reported in the log',
   (await text(p9, '#af-log')).includes('off-screen prompt still out of reach'));
+
+// The half that matters and the half nobody can be at the console for: what is
+// still mounted while the row is not.
+const stallProbe = probedStall.filter(t => t.startsWith('[Auto FDE] probe:'));
+check('a stall probes the state through the pill on its own',
+  stallProbe.length === 1
+    && stallProbe[0].includes('no row in the document')
+    && stallProbe[0].includes('PendingApprovalPill')
+    && stallProbe[0].includes('fns: approveToolCall'),
+  JSON.stringify(stallProbe));
+check('the stall probe reports a thread prop by shape and not by content',
+  stallProbe[0] && stallProbe[0].includes('threadItems=array[1]')
+    && !stallProbe[0].includes('the whole session'),
+  JSON.stringify(stallProbe[0] || null));
 
 // Being looked at is the one event that changes whether a jump can work, because
 // Chrome starts producing frames again. It is also the only one the script can be

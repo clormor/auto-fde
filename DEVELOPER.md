@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  79 assertions: the in-page script and the packaged
+npm run test:browser  82 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -361,6 +361,21 @@ reaches the handler the click runs and the props it closes over. From the pill i
 reaches whatever is still mounted in a hidden tab, which is the set actually
 available when it matters. Comparing them is the point: the approval has to be
 driven from something in the second set.
+
+**It runs itself, because the interesting half cannot be reached by hand.** The
+first attempt at this asked for a console command while the tab was hidden, which
+is not a thing anyone can do: typing it means focusing DevTools, and the question
+is what the page looks like when nobody is looking at it. So the probe fires from
+the first Allow the panel presses, before the click since the row unmounts once
+the prompt is answered, and again from the pill when a stall is reported. Once
+each. It is a map, not a running commentary.
+
+One trap in testing it. Only props whose names match `PROBE_INTERESTING` are
+reported at all, so asserting that the contents of a prop named `transcript` do
+not leak proves nothing: that prop is never printed under any circumstances. The
+tests name it `threadItems` instead, which is reported, and assert it comes out
+as `array[1]` with its contents absent. An assertion about privacy has to be made
+against something the code actually prints.
 
 It is reached from the console rather than the panel because it is not a decision
 anyone makes while using this. Detection is already solved for the API route, as

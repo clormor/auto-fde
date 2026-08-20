@@ -543,11 +543,20 @@
   // and reports each component's name, its function props by name, and its other
   // props by shape. Names and shapes only: props on a thread component hold the
   // conversation, and this output gets pasted into chat windows.
+  //
+  // It runs itself twice rather than waiting to be asked, because the interesting
+  // half is the hidden tab and a console command cannot be timed against one: to
+  // type it you focus DevTools, and the answer wanted is what the page looks like
+  // when nobody is. So the probe fires once from the first Allow this panel
+  // presses, which is the mounted case, and again from the pill when a stall is
+  // reported, which is the case that matters. Once each, since the point is a map
+  // and not a running commentary.
   const REACT_FIBER = /^__reactFiber\$|^__reactInternalInstance\$/;
   const PROBE_INTERESTING = /approv|pending|tool|item|thread|decision|allow|state/i;
   const PROBE_LEVELS = 40;
   const PROBE_KEYS = 12;
   const PROBE_STRING_LIMIT = 120;
+  let probedAClick = false;
 
   function fiberFor(el) {
     const key = Object.keys(el).find(name => REACT_FIBER.test(name));
@@ -598,14 +607,18 @@
       console.warn('[Auto FDE] probe: nothing to start from. Run it while a prompt is pending.');
       return 'nothing pending';
     }
-    let fiber = fiberFor(anchor.el);
+    return probeFrom(anchor.el, anchor.what);
+  }
+
+  function probeFrom(el, what) {
+    let fiber = fiberFor(el);
     if (!fiber) {
-      console.warn('[Auto FDE] probe: no React fiber on ' + anchor.what
+      console.warn('[Auto FDE] probe: no React fiber on ' + what
         + '. The page may not be React, or the key has changed.');
       return 'no fiber';
     }
 
-    const lines = [`[Auto FDE] probe: walking up from ${anchor.what}`];
+    const lines = [`[Auto FDE] probe: walking up from ${what}`];
     for (let level = 0; fiber && level < PROBE_LEVELS; level++, fiber = fiber.return) {
       const props = fiber.memoizedProps;
       if (!props || typeof props !== 'object') {
@@ -1053,6 +1066,9 @@
       reportedStall = true;
       appendLog(new Date().toLocaleTimeString(), 'off-screen prompt still out of reach');
       console.warn(`[Auto FDE] off-screen prompt still out of reach; slowing down. ${stallReport()}`);
+      // The state as it stands with the row missing. That is the only moment
+      // worth mapping, and the one moment nobody can be at the console for.
+      probeFrom(marker, 'the pending pill, with no row in the document');
       return;
     }
     console.log(`[Auto FDE] a prompt is pending off screen; went to it (attempt ${jumpAttempts})`);
@@ -1087,8 +1103,13 @@
         btn.style.outline = '2px solid #4ade80';
         // Before the click, not after. The page's own handler sends the grant
         // synchronously, so a window opened after the click has already missed
-        // the request it was opened to catch.
+        // the request it was opened to catch. The probe is before it for the same
+        // reason: the row unmounts once the prompt is answered.
         markApprovalClick();
+        if (!probedAClick) {
+          probedAClick = true;
+          probeFrom(btn, 'the Allow button being pressed');
+        }
         btn.click();
         record(label, cat.id);
         resetJumps();
