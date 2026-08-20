@@ -610,6 +610,43 @@
     return probeFrom(anchor.el, anchor.what);
   }
 
+  // Props are only what a component was handed. The first walk against a real
+  // session showed the state is all there in a hidden tab, contextMap,
+  // contextOrder, sessionState, startAgentLoop, and no way to change any of it,
+  // because the functions that do live in a context value or a hook rather than
+  // in props. This reports those two.
+  //
+  // Only shapes whose keys look like they could answer a prompt are printed. A
+  // provider value or a hook's state is otherwise most of the application, and
+  // this output goes in a chat window.
+  const PROBE_ACTIONS = /approv|allow|accept|deny|decision|respond|resolve|submit|continue|resume|dispatch/i;
+  const PROBE_HOOKS = 30;
+  const PROBE_SHAPES = 8;
+
+  function stateShapes(fiber) {
+    const out = [];
+    const props = fiber.memoizedProps;
+    // A context provider carries everything it offers in one prop, so the shape
+    // of that prop is the shape of what its subtree can reach.
+    const value = props && typeof props === 'object' ? props.value : null;
+    if (value && (typeof value === 'object' || typeof value === 'function')) {
+      out.push(`value: ${describeValue(value)}`);
+    }
+    // A function component's memoizedState is a linked list of hooks. A store or
+    // a reducer's dispatch sits in one of them.
+    let hook = fiber.memoizedState;
+    for (let i = 0; hook && i < PROBE_HOOKS && out.length < PROBE_SHAPES; i++, hook = hook.next) {
+      const state = hook.memoizedState;
+      // nodeType rules out a hook holding a DOM node, which describes itself as
+      // the entire element otherwise.
+      if (!state || typeof state !== 'object' || state.nodeType) continue;
+      const keys = Object.keys(state);
+      if (!keys.some(key => PROBE_ACTIONS.test(key) || PROBE_INTERESTING.test(key))) continue;
+      out.push(`hook ${i}: ${describeValue(state)}`);
+    }
+    return out;
+  }
+
   function probeFrom(el, what) {
     let fiber = fiberFor(el);
     if (!fiber) {
@@ -633,7 +670,8 @@
         + (handlers.length ? `\n      fns: ${handlers.join(', ')}` : '')
         + (interesting.length
           ? `\n      props: ${interesting.map(k => `${k}=${describeValue(props[k])}`).join(', ')}`
-          : ''));
+          : '')
+        + stateShapes(fiber).map(shape => `\n      ${shape}`).join(''));
     }
     console.log(lines.join('\n'));
     return 'probed';

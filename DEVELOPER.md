@@ -65,7 +65,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  82 assertions: the in-page script and the packaged
+npm run test:browser  83 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -369,6 +369,27 @@ is what the page looks like when nobody is looking at it. So the probe fires fro
 the first Allow the panel presses, before the click since the row unmounts once
 the prompt is answered, and again from the pill when a stall is reported. Once
 each. It is a map, not a running commentary.
+
+**What the first real walk found, from a hidden tab with no row in the
+document.** Forty levels up from the pill, all of it mounted:
+
+- `startAgentLoop`, `abortAgentLoop`, `onEnterSubAgent`, `onExitSubAgent`
+- `lastPersistedAgentState={contextMap, contextOrder, name, agentSystemPrompt,
+  modeConfig, toolConfigurations, modelConfiguration, todoItems, sessionState}`
+- `activeThread`, `loadedThreadInfo={id, name, version, …}`,
+  `lastReadThreadVersionRef`
+- `userBulkApprovalSettings={create, edit, import, deploy, tag, agentSelf}`
+- `initialState={agentStatus, …, requestStatus, sessionState, …}`
+- and at level 7, the pill's own row component reporting `item=undefined`, which
+  is the missing row stated by the page itself
+
+So the thread, the agent state and the loop control are all reachable while
+Chrome is not drawing the tab. What is not there is any way to change them:
+every one of those is a prop, and props are what a component was handed. The
+functions that answer a prompt live in a context value or a hook, which is why
+`stateShapes()` reports both, filtered to shapes whose keys match
+`PROBE_ACTIONS` or `PROBE_INTERESTING`. A provider value is otherwise most of
+the application.
 
 One trap in testing it. Only props whose names match `PROBE_INTERESTING` are
 reported at all, so asserting that the contents of a prop named `transcript` do

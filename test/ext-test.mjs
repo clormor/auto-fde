@@ -173,7 +173,18 @@ const DEAD_PILL_PAGE = `<!doctype html><html><body>
     return: {
       type: { displayName: 'ThreadStateProvider' },
       memoizedProps: { approveToolCall: () => {}, threadItems: ['the whole session'] },
-      return: null,
+      return: {
+        // What props cannot show: a context provider's value, and a hook holding
+        // a store. The functions that answer a prompt live in these, not in
+        // props, which is what the first real walk established.
+        type: { displayName: 'AgentStateContext.Provider' },
+        memoizedProps: { value: { respondToToolCall: () => {}, contextMap: {} } },
+        memoizedState: {
+          memoizedState: { pendingApproval: { id: 'item-9' }, dispatch: () => {} },
+          next: { memoizedState: { unrelated: 'skipped' }, next: null },
+        },
+        return: null,
+      },
     },
   };
 </script>
@@ -872,6 +883,12 @@ check('a stall probes the state through the pill on its own',
 check('the stall probe reports a thread prop by shape and not by content',
   stallProbe[0] && stallProbe[0].includes('threadItems=array[1]')
     && !stallProbe[0].includes('the whole session'),
+  JSON.stringify(stallProbe[0] || null));
+// The setter is the thing being looked for, and props never carry it.
+check('the probe reaches into context values and hooks, where the setters are',
+  stallProbe[0] && stallProbe[0].includes('value: {respondToToolCall, contextMap}')
+    && stallProbe[0].includes('hook 0: {pendingApproval, dispatch}')
+    && !stallProbe[0].includes('unrelated'),
   JSON.stringify(stallProbe[0] || null));
 
 // Being looked at is the one event that changes whether a jump can work, because
