@@ -29,6 +29,11 @@ Practical consequences worth stating out loud:
   is one fixed line telling the agent to carry on, sent once the connection has
   answered two probes, and every send is in the panel's log. Untick it if
   nothing should be said in your name.
+- Accepting messages from apps on this device is on by default, and any of
+  them can send any text into the session. It is not remote access from the
+  internet: the request is a DOM attribute, so what can write it is code already
+  running on this device, the page's own JavaScript included. Every message is
+  in the log. Untick it if nothing outside the browser should speak here.
 - Leave it running on a long unattended session and you will not know what was
   approved beyond the last ten lines in the panel and whatever is in the
   console.
@@ -65,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  78 assertions: the in-page script and the packaged
+npm run test:browser  88 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -418,6 +423,40 @@ of `auto-fde.js` and rasterises it with Playwright at 16, 32, 48 and 128, once
 in colour and once in flat grey. The mark is defined in exactly one place, the
 inline SVG in `auto-fde.js`, so the toolbar icon and the panel header cannot
 drift apart. Re-run it after touching the mark and commit what it writes.
+
+**Putting text into the chat.** The composer is a Slate editor and builds its
+model from trusted input. Code outside the page's own JavaScript context is in an
+isolated world: it shares the DOM but not the globals, its events arrive with
+`isTrusted` false, and the page's CSP refuses an injected `<script>`. A synthetic
+`paste`, an `InputEvent('beforeinput')` and `document.execCommand('insertText')`
+all leave Slate's model empty, and two of them paint the text into the DOM
+regardless, so the composer looks filled while the send button sends nothing.
+Range operations on the editor strip its `data-slate-string` leaves and leave a
+composer that needs a page reload.
+
+So the text goes through Slate's own editor object: the editable element's React
+fiber is walked up to the `editor` prop, the selection is set to the end of the
+document if nothing has been clicked in it, and `editor.insertText()` does the
+work. Same shape as reaching the store from the pending pill, for the same
+reason.
+
+**Nothing is sent unverified.** After the insert, the send path reads back
+`[data-slate-string]`, which is what Slate renders its model into, and refuses
+when the text is not there. An empty send is not a no-op: the session answers it
+by running its previous turn again, which looks and logs like a delivered reply.
+
+**Requests from apps on this device.** The request arrives as
+`data-auto-fde-request` on the body and the outcome goes back as
+`data-auto-fde-result`, attributes being the only thing both worlds can see. A
+`MutationObserver` reads it rather than a timer, since Chrome throttles timers in
+a tab nobody is looking at and the tab will be in the background. Handled ids are
+remembered, because the attribute stays on the body once answered and a later
+mutation would otherwise resend it. Anything that can run script on this device
+can write that attribute, the page's own JavaScript included.
+
+Writing the message straight to the session over Foundry's API works from
+anywhere, but it moves the thread version, so the page refuses its own next turn
+as a conflict until it is reloaded, and the reload takes this panel down.
 
 ## Tests
 
