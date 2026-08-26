@@ -238,6 +238,9 @@ const STATE_PAGE = `<!doctype html><html><body>
       },
     },
   };
+  // What the item's response ended up as, for a test that has to tell a write
+  // that landed from one that was merely attempted.
+  window.__snapshot = () => state.contextMap['item-7'].toolResponse;
   // The store's shape as measured: a reducer taking (state, event) and returning
   // the next state, and __setState taking an updater. dispatch is deliberately
   // absent, because the real one refuses the event its own reducer accepts.
@@ -346,13 +349,32 @@ const STATE_LEARN_PAGE = `<!doctype html><html><body>
 </script>
 </body></html>`;
 
-// The same reducer with nothing that will ever satisfy it, for the pace. A name
-// it has no case for is not going to grow one between two ticks.
+// The same reducer with nothing that will ever satisfy it, which is what a live
+// session is: every name this script has is refused, so the answer has to go in
+// without it.
 const STATE_REFUSING_PAGE = STATE_PAGE.replace(
   'onEvent: (current, event) => {',
   `onEvent: (current, event) => {
         window.__refused = (window.__refused || 0) + 1;
         throw new Error('Unhandled match for value: ' + JSON.stringify(event));`);
+
+// An agent object that will not be patched, which is the shape that would defeat
+// the watch: the assignment is not in strict mode, so a frozen object takes it
+// silently and leaves the original in place, and the page then looks exactly like
+// one that never calls the property.
+const STATE_FROZEN_PAGE = STATE_PAGE.replace(
+  "document.getElementById('pill')['__reactFiber$mock']",
+  "Object.freeze(store.agent);\n  document.getElementById('pill')['__reactFiber$mock']");
+
+// And a store that will not be written to at all, for the pace. Neither route
+// can answer this, and neither is going to start working between two ticks.
+const STATE_SEALED_PAGE = STATE_REFUSING_PAGE.replace(
+  '__setState: updater => { state = updater(state); },',
+  `__setState: updater => {
+      window.__writes = (window.__writes || 0) + 1;
+      updater(state);
+      throw new Error('the store is sealed');
+    },`);
 
 const STATE_BLOCKED_PAGE = STATE_PAGE
   .replace("toolName: 'container_transform_preview'", "toolName: 'delete_dataset'")
@@ -1097,6 +1119,8 @@ check('stop hands the page its real visibility back',
 // pending item present in the store the whole time.
 // ---------------------------------------------------------------------------
 const p12 = await mockPage(browser, SESSION_URL, undefined, STATE_PAGE);
+const p12Logs = [];
+p12.on('console', m => { if (m.text().includes('[Auto FDE]')) p12Logs.push(m.text()); });
 await p12.evaluate(SCRIPT);
 await p12.waitForTimeout(600);
 // Answering a prompt with no button is the job, not a preference, so there is no
@@ -1121,6 +1145,12 @@ check('the agent loop is started, not the request status forged',
 check('only the response is rewritten, never the rest of the item',
   stateEvents[0] && stateEvents[0].contextItem.toolName === 'container_transform_preview'
     && stateEvents[0].contextItem.toolRequest.branch === 'main');
+// The watch must not learn from this script's own write. It would record the name
+// it just guessed, announce that an approval sends it, and be no better informed.
+check('the script does not learn the name from its own write',
+  !p12Logs.some(t => t.includes('an approval sends'))
+    && !(await text(p12, '#af-log')).includes('learned that an approval sends'),
+  JSON.stringify(p12Logs));
 check('an answer with no button is counted and logged like any other',
   (await text(p12, '#af-count')) === '1'
     && (await text(p12, '#af-log')).includes('no row'));
@@ -1156,22 +1186,54 @@ check('the name the reducer refuses is not tried twice',
   refusedTypes.filter(t => t === 'upsertChildContextItem').length <= 1,
   JSON.stringify(refusedTypes));
 
-// The pace, for a reducer nothing will satisfy. This was retried every second
-// for as long as the prompt was up: one session's console held 1239 identical
-// refusals of the same write, each one printing the whole event back.
+// The watch is the only way the reducer's name can be learned, so it failing has
+// to be said rather than looking like a page that sends nothing. Answering still
+// works here, because this store's reducer takes the name already held.
+const p13e = await mockPage(browser, SESSION_URL, undefined, STATE_FROZEN_PAGE);
+const frozenWarnings = [];
+p13e.on('console', m => { if (m.type() === 'warning') frozenWarnings.push(m.text()); });
+await p13e.evaluate(SCRIPT);
+await p13e.waitForTimeout(JUMP_INTERVAL_MS * 2);
+check('an agent that cannot be watched is reported, not assumed silent',
+  frozenWarnings.some(t => t.includes('would not let its events be watched')),
+  JSON.stringify(frozenWarnings));
+check('and the prompt is still answered',
+  (await p13e.evaluate(() => window.__events)).length === 1);
+
+// A reducer that refuses every name this script has is a live session, and the
+// prompt still has to be answered. Setting the response on the item and handing
+// the store the state writes the same single field the reducer would have, so it
+// is what is left. It is second and it is not trusted: the item is read back, and
+// the log says which route answered.
 const p13c = await mockPage(browser, SESSION_URL, undefined, STATE_REFUSING_PAGE);
 await p13c.evaluate(SCRIPT);
-await p13c.evaluate(() => {
+await p13c.waitForTimeout(JUMP_INTERVAL_MS * 2);
+check('a prompt the reducer will not take is answered directly instead',
+  (await text(p13c, '#af-log')).includes('no row, direct'),
+  await text(p13c, '#af-log'));
+check('and the direct write set the response, not something else',
+  (await p13c.evaluate(() => JSON.stringify(window.__snapshot()))) ===
+    JSON.stringify({ state: 'requested' }),
+  await p13c.evaluate(() => JSON.stringify(window.__snapshot())));
+check('the agent loop is started after a direct write too',
+  (await p13c.evaluate(() => window.__loops)) === 1);
+
+// The pace, for a store neither route can write to. This was retried every second
+// for as long as the prompt was up: one session's console held 1239 identical
+// refusals of the same write, each one printing the whole event back.
+const p13d = await mockPage(browser, SESSION_URL, undefined, STATE_SEALED_PAGE);
+await p13d.evaluate(SCRIPT);
+await p13d.evaluate(() => {
   window.__nudge = setInterval(() => document.body.appendChild(document.createElement('span')), 100);
 });
-await p13c.waitForTimeout(JUMP_INTERVAL_MS * (MAX_JUMPS + 1) + 800);
-await p13c.evaluate(() => clearInterval(window.__nudge));
-const refusals = await p13c.evaluate(() => window.__refused);
-check('a write the reducer throws on is attempted once, not every tick',
-  refusals === 1, `attempts=${refusals}`);
+await p13d.waitForTimeout(JUMP_INTERVAL_MS * (MAX_JUMPS + 1) + 800);
+await p13d.evaluate(() => clearInterval(window.__nudge));
+const writes = await p13d.evaluate(() => window.__writes);
+check('a store neither route can write to is tried once per route, not per tick',
+  writes === 2, `writes=${writes}`);
 check('and the refusal is in the panel rather than only the console',
-  (await text(p13c, '#af-log')).includes('the session refused a upsertChildContextItem answer'),
-  await text(p13c, '#af-log'));
+  (await text(p13d, '#af-log')).includes('the session refused a upsertChildContextItem answer'),
+  await text(p13d, '#af-log'));
 
 // ---------------------------------------------------------------------------
 // An AudioContext built before the page has been activated cannot start, and

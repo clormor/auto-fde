@@ -527,6 +527,10 @@
   let lastStateTryAt = 0;
   let learnedResponse = null;
   let learnedEvent = null;
+  // Set across this script's own call into the reducer, so the watch above can
+  // tell the page's events from its own. __setState is synchronous, measured, so
+  // the flag cannot outlive the call; the finally is there in case that changes.
+  let writingOurOwn = false;
   let knownStore = null;
   let watchedAgent = null;
   let awaitingGrant = null, grantRead = false;
@@ -583,14 +587,37 @@
     if (!agent || watchedAgent === agent) return;
     watchedAgent = agent;
     const real = agent.onEvent;
-    agent.onEvent = function (state, event) {
-      if (event && typeof event.type === 'string' && event.contextItem
+    const wrapper = function (state, event) {
+      // Never this script's own write. It would learn the name it just guessed,
+      // print a line saying an approval sends it, and be no better informed.
+      if (!writingOurOwn && event && typeof event.type === 'string' && event.contextItem
           && event.contextItem.toolResponse && learnedEvent !== event.type) {
         learnedEvent = event.type;
+        appendLog(new Date().toLocaleTimeString(), `learned that an approval sends ${event.type}`);
         console.log(`[Auto FDE] an approval sends ${event.type}`);
       }
       return real.apply(this, arguments);
     };
+
+    agent.onEvent = wrapper;
+    // Checked, because this file is not a module and the assignment is not in
+    // strict mode: a frozen object or an accessor with no setter takes it
+    // silently and leaves the original in place, which reads exactly like a page
+    // that never calls the property.
+    if (agent.onEvent !== wrapper) {
+      try {
+        Object.defineProperty(agent, 'onEvent',
+          { value: wrapper, writable: true, configurable: true });
+      } catch (err) {
+        console.warn(`[Auto FDE] the session's events cannot be watched: ${err.message}`);
+      }
+    }
+    if (agent.onEvent !== wrapper) {
+      watchedAgent = null;
+      console.warn('[Auto FDE] the session would not let its events be watched;'
+        + ' the name an approval sends cannot be learned.');
+      return;
+    }
     teardown.push(() => {
       agent.onEvent = real;
       if (watchedAgent === agent) watchedAgent = null;
@@ -743,17 +770,46 @@
   // store closed over, so the public property is a different door. What does work
   // is running the reducer and handing the store the result, as an updater.
   // agent.onEvent(state, event) is the exact call the page makes, observed.
+  const refusedEvents = new Set();
   function writeAnswer(store, event) {
     try {
+      writingOurOwn = true;
       store.__setState(current => store.agent.onEvent(current, event));
       return true;
     } catch (err) {
+      if (refusedEvents.has(event.type)) return false;
+      refusedEvents.add(event.type);
       // Shortened, because the page's own message embeds the entire event it
       // could not match, which is the item, which is the user's transcript and
       // their tool arguments. One refusal put a whole Slack message body and a
       // handful of RIDs into a console whose contents get pasted into chat
       // windows.
       console.warn(`[Auto FDE] the session refused ${event.type}: ${shorten(err.message, RESPONSE_LIMIT)}`);
+      return false;
+    } finally {
+      writingOurOwn = false;
+    }
+  }
+
+  // The route left when the reducer has no case for the event. It sets the
+  // response on the item and hands the store the state, which is the same single
+  // field the reducer would have set and nothing besides: no other item is
+  // touched and nothing on this one is rewritten. It is second, not preferred,
+  // because the reducer may do bookkeeping this cannot see, and it is not
+  // trusted either: the caller reads the item back and records a write that did
+  // not stick, and the log says which route answered.
+  function writeResponseDirectly(store, pending, response) {
+    try {
+      store.__setState(current => {
+        const map = current && current.contextMap;
+        if (!map || !map[pending.id]) return current;
+        const item = Object.assign({}, map[pending.id], { toolResponse: response });
+        return Object.assign({}, current,
+          { contextMap: Object.assign({}, map, { [pending.id]: item }) });
+      });
+      return true;
+    } catch (err) {
+      console.warn(`[Auto FDE] the session refused a direct write: ${shorten(err.message, RESPONSE_LIMIT)}`);
       return false;
     }
   }
@@ -790,15 +846,18 @@
     // Only the response changes. Everything else on the item belongs to the page,
     // and rewriting any of it would be rewriting somebody's transcript.
     const item = Object.assign({}, pending, { toolResponse: response });
+    let route = 'no row';
     if (!writeAnswer(store, { type, contextItem: item })) {
-      // Recorded, because a reducer with no case for an event will not grow one
-      // between two ticks: this was retried every second for as long as the
-      // prompt was up, and one session's console held 1239 identical refusals of
-      // the same write. Said in the panel too, a console-only failure having
-      // twice now been the reason a stall went unexplained.
-      failedToAnswer.add(attempt);
-      appendLog(new Date().toLocaleTimeString(), `the session refused a ${type} answer`);
-      return false;
+      // The reducer having no case for the event is not something that changes
+      // between two ticks, so the direct write is tried here rather than the
+      // whole thing being retried every second: one session's console held 1239
+      // identical refusals of the same write.
+      if (!writeResponseDirectly(store, pending, response)) {
+        failedToAnswer.add(attempt);
+        appendLog(new Date().toLocaleTimeString(), `the session refused a ${type} answer`);
+        return false;
+      }
+      route = 'no row, direct';
     }
 
     // Verified rather than assumed. A half-answered prompt is worse than a
@@ -827,7 +886,7 @@
     } else {
       console.warn('[Auto FDE] no way to start the agent loop is in reach.');
     }
-    record(pending.toolName || 'prompt', `${cat.id} · no row`);
+    record(pending.toolName || 'prompt', `${cat.id} · ${route}`);
     return true;
   }
 

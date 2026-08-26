@@ -70,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  102 assertions: the in-page script and the packaged
+npm run test:browser  108 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -270,11 +270,25 @@ no row. `UPSERT_EVENT` is what it starts from and nothing more.
 Only the `type` is read. The event carries the item, which is somebody's
 transcript and their tool arguments.
 
-The open question this cannot settle from a fixture: whether the page calls the
-`onEvent` property or a reference it closed over. If it is the latter the wrapper
-never fires, nothing is learned, and the panel says the answer was refused. That
-is the thing to check against a live session, and
-`[Auto FDE] an approval sends …` in the page console is what says it worked.
+The wrap is checked rather than assumed. This file is not a module, so the
+assignment is not in strict mode, and a frozen object or an accessor with no
+setter takes it silently and leaves the original in place, which reads exactly
+like a page that never calls the property. `Object.defineProperty` is tried next,
+and if the property still is not the wrapper it is said out loud.
+
+The watch ignores this script's own writes, via `writingOurOwn`. Without that it
+learns the name it just guessed, announces that an approval sends it, and is no
+better informed.
+
+**When the reducer has no case for any name held, the response is written
+directly.** `writeResponseDirectly()` sets `toolResponse` on the pending item and
+hands the store the state: the same single field the reducer would have set,
+nothing else on the item rewritten and no other item touched. It is second rather
+than preferred, because the reducer may do bookkeeping this cannot see. It is not
+trusted either: the item is read back the same way, a write that did not stick is
+recorded against item and event type, and the log says `no row, direct` so the
+route that answered is never a guess. `failedToAnswer` covers both routes, so a
+store neither can write to costs one attempt each rather than one per tick.
 
 **`store.dispatch` is not the door.** It refuses the very event its own reducer
 accepts, with `Unhandled match for value`, and the page has never once been
