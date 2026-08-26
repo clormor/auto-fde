@@ -14,9 +14,11 @@
 //   another one on top.
 //
 // Config is injected, not imported
-//   A MAIN-world script cannot see chrome.storage, so the configured origins
-//   are written onto the page as window.__autoFdeConfig by a separate
-//   injection immediately before the script itself.
+//   A MAIN-world script cannot see chrome.storage or chrome.runtime, so the
+//   configured origins and the manifest version are written onto the page as
+//   window.__autoFdeConfig by a separate injection immediately before the
+//   script itself. The version is read here, where the manifest is reachable,
+//   so the panel can show which revision is running.
 //
 // Button state
 //   The icon goes greyscale on pages where the script would refuse to run, and
@@ -139,10 +141,10 @@ async function start(tab) {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       world: "MAIN",
-      func: (allowed, marker) => {
-        window.__autoFdeConfig = { origins: allowed, pathMarker: marker };
+      func: (allowed, marker, version) => {
+        window.__autoFdeConfig = { origins: allowed, pathMarker: marker, version };
       },
-      args: [origins, PATH_MARKER]
+      args: [origins, PATH_MARKER, chrome.runtime.getManifest().version]
     });
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },

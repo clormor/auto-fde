@@ -40,7 +40,7 @@
   const CATEGORIES = [
     { id: 'read',   label: 'Read-only actions',      enabled: true,  risk: 1, match: t => /read|view|preview|list/i.test(t) },
     { id: 'write',  label: 'Write / edit actions',    enabled: true,  risk: 2, match: t => /write|edit|update|create/i.test(t) },
-    { id: 'deploy', label: 'Deploy / build actions',  enabled: false, risk: 3, match: t => /deploy|build|publish|run/i.test(t) },
+    { id: 'deploy', label: 'Deploy / build actions',  enabled: true,  risk: 3, match: t => /deploy|build|publish|run/i.test(t) },
     { id: 'other',  label: 'Unclassified',            enabled: true,  risk: 0, match: () => true },
   ];
   const BY_RISK = [...CATEGORIES].sort((a, b) => b.risk - a.risk);
@@ -746,6 +746,8 @@
       }
       .mark { width: 15px; height: 15px; flex: 0 0 auto; display: block; }
       .name { font-weight: 600; letter-spacing: .005em; }
+      /* Which revision is running, so a bug report can name one. */
+      .ver { color: #949cab; font-size: 11px; font-variant-numeric: tabular-nums; }
       .count {
         font-variant-numeric: tabular-nums;
         font-size: 11px; font-weight: 600;
@@ -808,6 +810,7 @@
       <div class="hd" id="af-header">
         ${DIAMOND}
         <span class="name">Auto FDE</span>
+        <span class="ver" id="af-version" title="Extension version"></span>
         <span class="count" id="af-count" title="Prompts allowed">0</span>
         <span class="ctl">
           <button class="icon" id="af-toggle" type="button" data-state="active"
@@ -845,7 +848,7 @@
         </div>
 
         <div class="sec">
-          <div class="cap">Recent clicks</div>
+          <div class="cap">Recent activity</div>
           <div class="log" id="af-log"></div>
         </div>
 
@@ -856,6 +859,12 @@
   const header = shadow.querySelector('#af-header');
   const catsEl = shadow.querySelector('#af-cats');
   const countEl = shadow.querySelector('#af-count');
+  // manifest.json holds the only version number in the repo, and background.js
+  // passes it through. Run by hand there is none, so the slot comes out rather
+  // than sitting empty in the header.
+  const versionEl = shadow.querySelector('#af-version');
+  if (config.version) versionEl.textContent = 'v' + config.version;
+  else versionEl.remove();
   const logEl = shadow.querySelector('#af-log');
   const toggleBtn = shadow.querySelector('#af-toggle');
   const stopBtn = shadow.querySelector('#af-stop');
