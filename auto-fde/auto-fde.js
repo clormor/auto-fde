@@ -112,7 +112,21 @@
   // because the container above the row is the transcript, and matching the block
   // list against a whole session would refuse on a word somebody typed an hour
   // ago.
+  // Read once per button. scan() runs from a MutationObserver on a page that
+  // mutates constantly, and a prompt the block list holds back or an unticked
+  // category skips is never added to `clicked`, so it sits there having its
+  // context walked from scratch on every mutation: five ancestors, four hundred
+  // text nodes each, and a closest() per node. Caching changes no decision, the
+  // click path having always decided on the first scan that saw the button.
+  const contextCache = new WeakMap();
   function promptContextFor(btn) {
+    if (contextCache.has(btn)) return contextCache.get(btn);
+    const context = readPromptContext(btn);
+    contextCache.set(btn, context);
+    return context;
+  }
+
+  function readPromptContext(btn) {
     const dialog = btn.closest('[role="dialog"], [role="alertdialog"], .dialog, .modal');
     if (dialog) return promptTextOf(dialog);
     let el = btn.parentElement;
@@ -318,12 +332,33 @@
   // every button first, since that is what the control actually carries, then the
   // visible text, which catches one whose label has been renamed but still reads
   // Send.
-  const SEND_LABEL = /send message|^send$|submit/i;
+  // Anchored, not a substring. `submit` and `send message` loose would match
+  // `Submit feedback` anywhere on the page, and the first in document order wins,
+  // so a mis-target is clicked and reported as sent: the resume would log that it
+  // went and leave the text sitting in the composer with the session still
+  // stalled. The old exact label was brittle and could at least not do that.
+  const SEND_LABEL = /^(send|send message|submit)$/i;
+  // How far up from the composer to look for the control that belongs to it.
+  const SEND_SCOPE = 6;
+
+  function sharesScopeWith(composer, btn) {
+    let el = composer;
+    for (let level = 0; el && level < SEND_SCOPE; level++, el = el.parentElement) {
+      if (el.contains(btn)) return true;
+    }
+    return false;
+  }
+
   function findSendButton() {
-    const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
-    return buttons.find(btn => SEND_LABEL.test(collapse(btn.getAttribute('aria-label'))))
-      || buttons.find(btn => SEND_LABEL.test(collapse(btn.innerText) || collapse(btn.textContent)))
-      || null;
+    const matches = Array.from(document.querySelectorAll('button, [role="button"]'))
+      .filter(btn => SEND_LABEL.test(collapse(btn.getAttribute('aria-label')))
+        || SEND_LABEL.test(collapse(btn.innerText) || collapse(btn.textContent)));
+    if (matches.length < 2) return matches[0] || null;
+    // More than one control on the page answers to Send, so the composer says
+    // which of them is this chat's.
+    const composer = findRichInput() || findFallbackTextarea();
+    if (!composer) return matches[0];
+    return matches.find(btn => sharesScopeWith(composer, btn)) || matches[0];
   }
   function findFallbackTextarea() {
     return Array.from(document.querySelectorAll('textarea'))
@@ -559,13 +594,28 @@
   // the flag cannot outlive the call; the finally is there in case that changes.
   let writingOurOwn = false;
   let knownStore = null;
-  let watchedAgent = null;
+  // Every agent already patched, not the last one. The console changes route
+  // without reloading, so a session can be left and come back to; a single slot
+  // held the agent from the session in between, and coming back wrapped the
+  // wrapper. Each round trip added a layer and a teardown entry, and Stop unwound
+  // only the outermost, leaving the rest on the page after the panel was gone.
+  const watchedAgents = new WeakSet();
   let awaitingGrant = null, grantRead = false;
   const refusedWithoutARow = new Set();
   const failedToAnswer = new Set();
 
   function shorten(text, limit) {
     return text.length > limit ? text.slice(0, limit) + '…' : text;
+  }
+
+  // The phrase an error leads with, and none of what it quotes. The reducer's
+  // message is `Unhandled match for value: {…the whole event…}`, and the event is
+  // the item, so the first four hundred characters of it are the tool's name and
+  // its arguments rather than anything about the failure. Truncating bounded how
+  // much of somebody's transcript went into a console whose contents get pasted
+  // into chat windows; it did not stop it.
+  function reasonFrom(err) {
+    return collapse(((err && err.message) || '').split(/[{[]/)[0]) || 'no reason given';
   }
 
   function fiberFor(el) {
@@ -611,14 +661,22 @@
   // carries the item, which is somebody's transcript and their tool arguments.
   function learnEvent(store) {
     const agent = store.agent;
-    if (!agent || watchedAgent === agent) return;
-    watchedAgent = agent;
+    if (!agent || watchedAgents.has(agent)) return;
+    watchedAgents.add(agent);
     const real = agent.onEvent;
     const wrapper = function (state, event) {
       // Never this script's own write. It would learn the name it just guessed,
       // print a line saying an approval sends it, and be no better informed.
-      if (!writingOurOwn && event && typeof event.type === 'string' && event.contextItem
-          && event.contextItem.toolResponse && learnedEvent !== event.type) {
+      //
+      // And only while a click of this script's own is in flight. Carrying a
+      // contextItem with a toolResponse is not enough on its own: the tool's
+      // result comes back the same shape, under a different type, seconds later,
+      // and whichever arrived last became the name used for the next answer.
+      // awaitingGrant is set immediately before the click and cleared once the
+      // item is seen to change, which is exactly the window an approval is in.
+      if (!writingOurOwn && awaitingGrant && event && typeof event.type === 'string'
+          && event.contextItem && event.contextItem.toolResponse
+          && learnedEvent !== event.type) {
         learnedEvent = event.type;
         appendLog(new Date().toLocaleTimeString(), `learned that an approval sends ${event.type}`);
         console.log(`[Auto FDE] an approval sends ${event.type}`);
@@ -640,14 +698,14 @@
       }
     }
     if (agent.onEvent !== wrapper) {
-      watchedAgent = null;
+      watchedAgents.delete(agent);
       console.warn('[Auto FDE] the session would not let its events be watched;'
         + ' the name an approval sends cannot be learned.');
       return;
     }
     teardown.push(() => {
       agent.onEvent = real;
-      if (watchedAgent === agent) watchedAgent = null;
+      watchedAgents.delete(agent);
     });
   }
 
@@ -811,7 +869,7 @@
       // their tool arguments. One refusal put a whole Slack message body and a
       // handful of RIDs into a console whose contents get pasted into chat
       // windows.
-      console.warn(`[Auto FDE] the session refused ${event.type}: ${shorten(err.message, RESPONSE_LIMIT)}`);
+      console.warn(`[Auto FDE] the session refused ${event.type}: ${reasonFrom(err)}`);
       return false;
     } finally {
       writingOurOwn = false;
@@ -826,17 +884,34 @@
   // trusted either: the caller reads the item back and records a write that did
   // not stick, and the log says which route answered.
   function writeResponseDirectly(store, pending, response) {
+    // Only where the pending item is the map's own value. findToolResponse()
+    // searches ITEM_SEARCH_DEPTH levels down, so the holder it returns need not
+    // be map[id]: it can be something nested under it. Assigning to map[id] then
+    // has two ways to go wrong, and the second is the dangerous one. The id may
+    // not be a key at all, in which case nothing is written and this used to
+    // report that it had been. Or it is a key, and the write adds a second
+    // toolResponse at the top level while the real one underneath stays pending
+    // — and the read-back finds the outer one, matches, and starts the agent loop
+    // on a prompt nobody answered. That is the half-answered state, reached by
+    // the one route with no reducer to catch it.
+    const target = snapshotOf(store);
+    const holder = target && target.contextMap && target.contextMap[pending.id];
+    if (!holder || !holder.toolResponse) {
+      console.warn('[Auto FDE] the pending item is not the session\'s own map entry;'
+        + ' it will not be written to directly.');
+      return false;
+    }
     try {
       store.__setState(current => {
         const map = current && current.contextMap;
-        if (!map || !map[pending.id]) return current;
+        if (!map || !map[pending.id] || !map[pending.id].toolResponse) return current;
         const item = Object.assign({}, map[pending.id], { toolResponse: response });
         return Object.assign({}, current,
           { contextMap: Object.assign({}, map, { [pending.id]: item }) });
       });
       return true;
     } catch (err) {
-      console.warn(`[Auto FDE] the session refused a direct write: ${shorten(err.message, RESPONSE_LIMIT)}`);
+      console.warn(`[Auto FDE] the session refused a direct write: ${reasonFrom(err)}`);
       return false;
     }
   }

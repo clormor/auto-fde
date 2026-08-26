@@ -70,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  108 assertions: the in-page script and the packaged
+npm run test:browser  110 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -330,6 +330,52 @@ entire event it could not match, which is the item, which is the user's
 transcript and their tool arguments. One of them put a whole Slack message body
 and a handful of RIDs into a console whose contents get pasted into chat windows.
 `shorten()` it.
+
+**The direct write only touches a pending item that is the map's own value.**
+`findToolResponse()` searches `ITEM_SEARCH_DEPTH` levels down, so the holder it
+returns need not be `map[id]`. Assigning to `map[id]` regardless has two ways to
+go wrong and the second is the dangerous one: the id may not be a key, in which
+case nothing is written and it reported that it had been; or it is a key, and the
+write adds a second `toolResponse` above the real one, which stays pending, and
+the read-back finds the outer one, matches, and starts the agent loop on a prompt
+nobody answered. Half answered, by the one route with no reducer to catch it. So
+the holder is checked against the map entry first, and a nested one is refused.
+
+**The event name is learned only while a click of this script's own is in
+flight.** Carrying a `contextItem` with a `toolResponse` is not enough on its own:
+the tool's result comes back the same shape under a different type seconds later,
+and whichever arrived last became the name used for the next answer.
+`awaitingGrant` is set immediately before the click and cleared once the item is
+seen to change, which is exactly the window an approval occupies.
+
+**`watchedAgents` is a set, not a slot.** The console changes route without
+reloading, so a session can be left and come back to. A single slot held the
+agent from the session in between, and coming back wrapped the wrapper: each
+round trip added a layer and a `teardown` entry, and Stop unwound only the
+outermost, leaving the rest on the page after the panel was gone.
+
+**The send label is anchored.** `submit` and `send message` as substrings match
+`Submit feedback` anywhere on the page, and the first in document order wins, so
+the wrong control is clicked and reported as sent: the resume logs that it went
+and leaves the text in the composer with the session still stalled. The old exact
+label was brittle and could at least not do that. Where more than one control
+still answers to Send, the composer decides, by `SEND_SCOPE` ancestors. A decoy
+button sits in the mock page ahead of the real one, so every existing send
+assertion guards this.
+
+**The prompt's text is read once per button.** `scan()` runs from a
+MutationObserver on a page that mutates constantly, and a prompt the block list
+holds back or an unticked category skips is never added to `clicked`, so it sat
+there having its context walked from scratch on every mutation: five ancestors,
+four hundred text nodes each, a `closest()` per node. Caching changes no decision,
+the click path having always decided on the first scan that saw the button.
+
+**An error's phrase is printed, never what it quotes.** `reasonFrom()` cuts at
+the first brace. The reducer's message is `Unhandled match for value: {…the whole
+event…}`, and the event is the item, so the first four hundred characters of it
+are the tool's name and its arguments rather than anything about the failure.
+Truncating bounded how much of somebody's transcript reached the console; it did
+not stop it.
 
 **Every way out of `answerWithoutARow()` says why, once, in the panel.** A silent
 refusal is indistinguishable from the whole feature being dead, and a reason in a

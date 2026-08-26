@@ -66,6 +66,7 @@ const PAGE = `<!doctype html><html><body style="font-family:sans-serif">
       e.clipboardData.getData('text/plain');
   });
 </script>
+<button id="decoy" aria-label="Submit feedback"></button>
 <button id="send" aria-label="Send message"></button>
 
 <script>
@@ -357,6 +358,15 @@ const STATE_REFUSING_PAGE = STATE_PAGE.replace(
   `onEvent: (current, event) => {
         window.__refused = (window.__refused || 0) + 1;
         throw new Error('Unhandled match for value: ' + JSON.stringify(event));`);
+
+// The pending item nested under the map entry rather than being it, which is the
+// shape ITEM_SEARCH_DEPTH exists for. Writing the response straight onto
+// map[id] here would add a second toolResponse above the real one, and the
+// read-back would find the outer one, match, and start the agent loop on a prompt
+// nobody answered.
+const STATE_NESTED_PAGE = STATE_REFUSING_PAGE.replace(
+  "toolResponse: { state: 'pending_approval' },",
+  "content: { id: 'item-7', toolResponse: { state: 'pending_approval' } },");
 
 // An agent object that will not be patched, which is the shape that would defeat
 // the watch: the assignment is not in strict mode, so a frozen object takes it
@@ -1217,6 +1227,19 @@ check('and the direct write set the response, not something else',
   await p13c.evaluate(() => JSON.stringify(window.__snapshot())));
 check('the agent loop is started after a direct write too',
   (await p13c.evaluate(() => window.__loops)) === 1);
+
+// Half answered is worse than waiting, and the direct write is the one route with
+// no reducer to catch it.
+const p13f = await mockPage(browser, SESSION_URL, undefined, STATE_NESTED_PAGE);
+await p13f.evaluate(SCRIPT);
+await p13f.waitForTimeout(JUMP_INTERVAL_MS * 2);
+check('a nested pending item is not written over the top of its holder',
+  (await p13f.evaluate(() => window.__snapshot())) === undefined,
+  JSON.stringify(await p13f.evaluate(() => window.__snapshot() ?? null)));
+check('and nothing is reported answered, nor the agent loop started',
+  (await p13f.evaluate(() => window.__loops)) === 0
+    && (await text(p13f, '#af-log')).includes('the session refused a upsertChildContextItem answer'),
+  await text(p13f, '#af-log'));
 
 // The pace, for a store neither route can write to. This was retried every second
 // for as long as the prompt was up: one session's console held 1239 identical
