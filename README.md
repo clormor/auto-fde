@@ -48,7 +48,7 @@ collapsed state are remembered. Pause and stop are icons in the title bar, so
 they still work when the panel is collapsed down to a single bar with the
 chevron. Paused shows an amber play icon, running shows a green pause icon.
 
-Two settings sit below the categories:
+Three settings sit below the categories:
 
 - **Keep the tab awake**, on by default. Inaudible audio marks the tab as
   audible, which stops Chrome throttling its timers and stops a long session
@@ -57,8 +57,15 @@ Two settings sit below the categories:
 - **Automatically resume after a network error**, on by default, since a dropped
   connection is what actually ends an unattended session. Once the connection has
   been back for a couple of seconds it types one line into the chat telling the
-  agent to carry on, and sends it. Every send is in the log. Untick it if you
-  would rather nothing was said on your behalf.
+  agent to carry on, and sends it. Every send is in the log, and the log says
+  whether the text went with it or whether the session was only nudged, since an
+  empty send resumes it either way. Untick it if you would rather nothing was
+  said on your behalf.
+- **Accept messages from apps on this device**, on by default. An app running
+  on your own machine can put a reply into this session, which is how you answer
+  an agent from your phone without being at the browser. Every message it sends
+  is in the log. Untick it and requests are refused rather than ignored, so
+  whatever asked is told no instead of waiting.
 
 If a prompt arrives while you are scrolled up the transcript, the panel scrolls
 you to the bottom to reach it, because Foundry only keeps the part of a long

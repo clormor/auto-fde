@@ -52,7 +52,19 @@ const PAGE = `<!doctype html><html><body style="font-family:sans-serif">
   <button id="allow3">Allow</button>
 </div>
 
-<div role="combobox" contenteditable="true" id="chat"></div>
+<!-- Shaped like Slate's editable: the send path checks data-slate-string for
+     what it is about to send, because Slate renders its model into those and
+     shows a placeholder instead when the model is empty. The mock takes the
+     paste, which the real editor does not, and renders it the same way. -->
+<div role="combobox" contenteditable="true" id="chat"><span data-slate-string="true"></span></div>
+<script>
+  document.addEventListener('paste', e => {
+    const chat = document.getElementById('chat');
+    if (!chat.contains(e.target)) return;
+    chat.querySelector('[data-slate-string]').textContent =
+      e.clipboardData.getData('text/plain');
+  });
+</script>
 <button id="send" aria-label="Send message"></button>
 
 <script>
@@ -584,6 +596,62 @@ await p1.waitForTimeout(3000);
 const sendsLater = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
 check('a banner still on screen does not send a second resume message',
   sendsLater === sendsAfter, `sends=${sendsLater - sendsAfter}`);
+
+// ---------------------------------------------------------------------------
+// Messages from apps on this device. The request and the answer travel as
+// attributes on the body because the caller is in an isolated world: it shares
+// the DOM with this script and nothing else.
+const askFor = (page, id, text) => page.evaluate(([i, t]) => {
+  document.body.removeAttribute('data-auto-fde-result');
+  document.body.setAttribute('data-auto-fde-request', JSON.stringify({ id: i, text: t }));
+}, [id, text]);
+const answerFor = page => page.evaluate(() => {
+  const raw = document.body.getAttribute('data-auto-fde-result');
+  return raw ? JSON.parse(raw) : null;
+});
+
+const sendsBeforeBridge = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
+await askFor(p1, 'req-1', 'the answer is 42');
+await p1.waitForTimeout(1200);
+const sendsAfterBridge = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
+check('a request from an app on this device sends one message',
+  sendsAfterBridge === sendsBeforeBridge + 1, `sends=${sendsAfterBridge - sendsBeforeBridge}`);
+check('the request is answered ok', (await answerFor(p1))?.ok === true,
+  JSON.stringify(await answerFor(p1)));
+check('the message went into the log',
+  (await text(p1, '#af-log')).includes('sent a message from this device'));
+
+// The request attribute stays on the body once it is answered, so any other
+// mutation would resend the last message if the id were not remembered.
+await p1.evaluate(() => document.body.appendChild(document.createElement('span')));
+await p1.evaluate(() => document.body.setAttribute('data-af-unrelated', '1'));
+await p1.waitForTimeout(1200);
+const sendsAfterNoise = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
+check('an answered request is not sent again', sendsAfterNoise === sendsAfterBridge,
+  `sends=${sendsAfterNoise - sendsAfterBridge}`);
+
+await askFor(p1, 'req-2', '   ');
+await p1.waitForTimeout(1200);
+const emptyAnswer = await answerFor(p1);
+check('a request with no text is refused', emptyAnswer?.ok === false, JSON.stringify(emptyAnswer));
+const sendsAfterEmpty = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
+check('a request with no text sends nothing', sendsAfterEmpty === sendsAfterBridge);
+
+// Unticked, a request is refused rather than ignored: whatever asked is waiting
+// on an answer and would otherwise hang until it timed out.
+await press(p1, '#af-bridge-toggle');
+await askFor(p1, 'req-3', 'this should not be sent');
+await p1.waitForTimeout(1200);
+const refused = await answerFor(p1);
+check('with the setting off a request is refused, not ignored', refused?.ok === false,
+  JSON.stringify(refused));
+check('the refusal says why', typeof refused?.error === 'string' && refused.error.length > 0);
+const sendsAfterOff = (await p1.evaluate(() => window.__hits)).filter(h => h === 'send').length;
+check('with the setting off nothing is sent', sendsAfterOff === sendsAfterBridge,
+  `sends=${sendsAfterOff - sendsAfterBridge}`);
+check('the refusal went into the log',
+  (await text(p1, '#af-log')).includes('refused a message from this device'));
+await press(p1, '#af-bridge-toggle');
 
 // ---------------------------------------------------------------------------
 // The header is the drag handle and the transport controls sit inside it, so a

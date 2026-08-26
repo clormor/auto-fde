@@ -225,8 +225,11 @@
   // ---------- Network-error auto-resume ----------
   // Set from the checkbox, which carries the default so the two cannot drift.
   let autoResumeEnabled = false;
+  let bridgeEnabled = false;
   let recovering = false;
-  let resumeTimer = null;
+  // Stop has to reach a send that is between its two waits, so the waits check
+  // this rather than a timer handle being cleared.
+  let stopped = false;
   const handledBanners = new WeakSet();
   // What gets typed into the chat and sent once the connection is back. It is a
   // fresh instruction, not a replay: the agent knows what it was doing, so it
@@ -272,31 +275,125 @@
     el.dispatchEvent(pasteEvent);
   }
 
-  function sendResumeMessage() {
+  // The rich input is a Slate editor and keeps its own model, which no DOM
+  // technique updates: a synthetic paste, an InputEvent('beforeinput') and
+  // document.execCommand('insertText') all leave the model empty, and the last
+  // two paint the text on screen regardless, so the composer looks filled while
+  // the send button sends nothing. The text goes through the editor object
+  // instead, reached from the editable element's React fiber.
+  const EDITOR_LEVELS = 60;
+
+  function looksLikeEditor(value) {
+    return !!value && typeof value === 'object' && Array.isArray(value.children)
+      && typeof value.insertText === 'function' && typeof value.apply === 'function';
+  }
+
+  function slateEditorFrom(el) {
+    const key = Object.keys(el).find(k =>
+      k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+    if (!key) return null;
+    let fiber = el[key];
+    for (let i = 0; i < EDITOR_LEVELS && fiber; i++, fiber = fiber.return) {
+      const props = fiber.memoizedProps;
+      if (props && looksLikeEditor(props.editor)) return props.editor;
+      if (looksLikeEditor(fiber.memoizedState && fiber.memoizedState.editor)) {
+        return fiber.memoizedState.editor;
+      }
+    }
+    return null;
+  }
+
+  // Slate refuses an edit with no selection, and an editor nobody has clicked in
+  // has none. The end of the document is where typing would have gone.
+  function endPointOf(editor) {
+    const path = [];
+    let node = editor;
+    while (node && Array.isArray(node.children) && node.children.length) {
+      const last = node.children.length - 1;
+      path.push(last);
+      node = node.children[last];
+    }
+    return { path, offset: typeof node?.text === 'string' ? node.text.length : 0 };
+  }
+
+  function insertThroughEditor(el, text) {
+    const editor = slateEditorFrom(el);
+    if (!editor) return false;
+    try {
+      if (!editor.selection) {
+        const point = endPointOf(editor);
+        editor.apply({
+          type: 'set_selection',
+          properties: null,
+          newProperties: { anchor: point, focus: point }
+        });
+      }
+      editor.insertText(text);
+      return true;
+    } catch (err) {
+      console.warn('[Auto FDE] The editor refused the text:', err);
+      return false;
+    }
+  }
+
+  // What the send button will read, rather than what the DOM happens to show:
+  // Slate renders the model into these, and renders its placeholder instead when
+  // the model is empty.
+  function richInputHolds(el, text) {
+    const rendered = Array.from(el.querySelectorAll('[data-slate-string="true"]'))
+      .map(n => n.textContent).join('');
+    return rendered.includes(text.slice(0, 40));
+  }
+
+  // Puts text in the chat and sends it, for both the network-error resume and
+  // the requests handled below. requireText decides what happens when the text
+  // will not go in: a request needs its words, so it fails; the resume only needs
+  // the session moving, which an empty send does, so it reports which it did.
+  async function composeAndSend(text, { requireText }) {
     const sendBtn = findSendButton();
-    if (!sendBtn) { console.warn('[Auto FDE] Could not locate send button.'); return false; }
+    if (!sendBtn) return { ok: false, error: 'no send button on this page' };
 
     const textarea = findFallbackTextarea();
+    let carriedText = false;
+
     if (textarea) {
-      if (!setTextareaValue(textarea, RESUME_TEXT)) {
-        console.warn('[Auto FDE] The chat textarea has no value setter to call.');
-        return false;
+      if (!setTextareaValue(textarea, text)) {
+        return { ok: false, error: 'the chat textarea has no value setter to call' };
       }
+      carriedText = true;
     } else {
       const rich = findRichInput();
-      if (!rich) { console.warn('[Auto FDE] Could not locate any chat input.'); return false; }
-      pasteIntoRichInput(rich, RESUME_TEXT);
+      if (!rich) return { ok: false, error: 'no chat input on this page' };
+      // The editor route first: it is the only one that changes Slate's model.
+      // The paste stays behind it because it costs one event, and an editor that
+      // accepts it needs no code change here.
+      if (!insertThroughEditor(rich, text)) pasteIntoRichInput(rich, text);
+      await new Promise(r => setTimeout(r, 300));
+      if (stopped) return { ok: false, error: 'stopped' };
+      carriedText = richInputHolds(rich, text);
+      if (!carriedText && requireText) {
+        return { ok: false, error: 'the editor would not take the text' };
+      }
     }
+
     // The editor needs a turn to take the text before the button will send it.
     // This is the one deferred action in the script, and it is not the prompt
     // click: a resume that lands late in a throttled tab still resumes, whereas
     // a prompt click that lands late is a session left sitting unanswered.
-    resumeTimer = setTimeout(() => {
-      resumeTimer = null;
-      if (!sendBtn.isConnected) { reportResume('could not send the resume message', true); return; }
-      sendBtn.click();
-      recordResume();
-    }, 300);
+    await new Promise(r => setTimeout(r, 300));
+    if (stopped) return { ok: false, error: 'stopped' };
+    if (!sendBtn.isConnected) return { ok: false, error: 'the send button went away' };
+    sendBtn.click();
+    return { ok: true, carriedText };
+  }
+
+  async function sendResumeMessage() {
+    const result = await composeAndSend(RESUME_TEXT, { requireText: false });
+    if (!result.ok) {
+      if (!stopped) reportResume('could not send the resume message', true);
+      return false;
+    }
+    recordResume(result.carriedText);
     return true;
   }
 
@@ -328,9 +425,8 @@
     const stable = await waitForStableConnection();
     if (!recovering) { reportResume(autoResumeEnabled ? 'watching' : 'off'); return; }
     if (stable) {
-      const ok = sendResumeMessage();
+      const ok = await sendResumeMessage();
       if (ok) reportResume('watching');
-      else reportResume('could not send the resume message', true);
     }
     recovering = false;
   }
@@ -741,6 +837,11 @@
             <span>Automatically resume after a network error</span>
           </label>
           <div class="hint">Tells the agent to carry on once the connection is back.</div>
+          <label class="row" style="margin-top:5px">
+            <input type="checkbox" id="af-bridge-toggle" checked>
+            <span>Accept messages from apps on this device</span>
+          </label>
+          <div class="hint">An app on your device can reply in this chat while you are away.</div>
         </div>
 
         <div class="sec">
@@ -806,6 +907,15 @@
   autoResumeEnabled = resumeBox.checked;
   if (autoResumeEnabled) reportResume('watching');
 
+  // Ticked by default: the point of it is unblocking a session while nobody is
+  // at the machine, and a default that had to be set again on every open would
+  // fail exactly then. Only code already running on this device can ask, and
+  // every message is in the log. Unticked, requests are refused rather than
+  // ignored, so whatever asked is told no instead of hanging.
+  const bridgeBox = shadow.querySelector('#af-bridge-toggle');
+  bridgeBox.onchange = e => { bridgeEnabled = e.target.checked; };
+  bridgeEnabled = bridgeBox.checked;
+
   // Neither answering a prompt with no button nor telling the page it is in front
   // is a preference. The first is the job; the second is how the page is kept
   // from deferring its own work. A setting only earns its place when the answer
@@ -863,16 +973,92 @@
   }
   renderEmptyLog();
 
+  // ---------- Messages from apps on this device ----------
+  // Code outside the page cannot reach this chat: an isolated world shares the
+  // DOM but not the globals, its events arrive untrusted, and the page's CSP
+  // refuses an injected script that would escape it. This script already runs in
+  // the page's context, so an app asks it to do the send instead. The request
+  // arrives as a body attribute and the outcome goes back as one, attributes
+  // being the only thing both worlds can see.
+  //
+  // Writing the message to the session over Foundry's API would work from
+  // anywhere, but it moves the thread version, and the page then refuses its own
+  // next turn until it is reloaded, which takes this panel down with it.
+  const REQUEST_ATTR = 'data-auto-fde-request';
+  const RESULT_ATTR = 'data-auto-fde-result';
+  const handledRequests = new Set();
+
+  function answerRequest(id, ok, error) {
+    document.body.setAttribute(RESULT_ATTR, JSON.stringify(error ? { id, ok, error } : { id, ok }));
+  }
+
+  function handleRequest(raw) {
+    let request;
+    try { request = JSON.parse(raw); } catch { return; }
+    if (!request || typeof request.id !== 'string' || typeof request.text !== 'string') return;
+    // The attribute stays on the body after it is answered, so every mutation of
+    // any other attribute would otherwise resend the last message.
+    if (handledRequests.has(request.id)) return;
+    handledRequests.add(request.id);
+
+    const time = new Date().toLocaleTimeString();
+    if (!bridgeEnabled) {
+      appendLog(time, 'refused a message from this device');
+      answerRequest(request.id, false, 'the panel is not accepting messages from this device');
+      return;
+    }
+    if (!request.text.trim()) {
+      answerRequest(request.id, false, 'no text to send');
+      return;
+    }
+
+    // requireText, because the words are the whole request. Sending without them
+    // would press send on an empty composer, which the session answers by running
+    // its previous turn again: a reply that looks delivered and never was.
+    composeAndSend(request.text, { requireText: true }).then(result => {
+      // Stop can land inside the send. The panel is gone by then, so there is no
+      // log to write to, but whatever asked is still waiting on an answer.
+      if (!stopped) {
+        appendLog(new Date().toLocaleTimeString(), result.ok
+          ? 'sent a message from this device'
+          : 'could not send a message from this device');
+      }
+      answerRequest(request.id, result.ok, result.ok ? null : result.error);
+    });
+  }
+
+  // An observer rather than a timer: Chrome throttles timers in a tab nobody is
+  // looking at, and this has to answer while the tab is in the background.
+  const requestObserver = new MutationObserver(() => {
+    const raw = document.body.getAttribute(REQUEST_ATTR);
+    if (raw) handleRequest(raw);
+  });
+  requestObserver.observe(document.body, { attributes: true, attributeFilter: [REQUEST_ATTR] });
+  // A request written before the panel was opened is still worth answering: the
+  // caller is waiting on the result attribute either way.
+  const pendingAtStart = document.body.getAttribute(REQUEST_ATTR);
+  if (pendingAtStart) handleRequest(pendingAtStart);
+
+  teardown.push(() => {
+    requestObserver.disconnect();
+    document.body.removeAttribute(REQUEST_ATTR);
+    document.body.removeAttribute(RESULT_ATTR);
+  });
+
+
   function record(text, cat) {
     count++; countEl.textContent = count;
     const t = new Date().toLocaleTimeString();
     appendLog(t, `${text} · ${cat}`);
     console.log(`[Auto FDE] ${t} — [${cat}] clicked "${text}"`);
   }
-  function recordResume() {
+  // Says which of the two happened. An empty send still resumes the session, so
+  // a log claiming the text was sent when it was not would go unnoticed.
+  function recordResume(carriedText) {
     const t = new Date().toLocaleTimeString();
-    appendLog(t, 'sent the resume message');
-    console.log(`[Auto FDE] ${t} — auto-sent resume message`);
+    const what = carriedText ? 'sent the resume message' : 'resumed the session, without the text';
+    appendLog(t, what);
+    console.log(`[Auto FDE] ${t} — ${what}`);
   }
 
   // ---------- Reaching a prompt that is not on the page ----------
@@ -1095,7 +1281,7 @@
   stopBtn.onclick = () => {
     observer.disconnect();
     clearInterval(backstop);
-    clearTimeout(resumeTimer);
+    stopped = true;
     stopKeepAlive();
     // The page has to be handed the truth back, or it keeps reading its own
     // visibility off a panel that is no longer there.
