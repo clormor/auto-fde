@@ -70,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  97 assertions: the in-page script and the packaged
+npm run test:browser  102 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -238,7 +238,7 @@ in the page's own context and the session's store is reachable from the pending
 pill, which is in the document even in a hidden tab, so the answer is written
 where the click writes it.
 
-**What a click does, measured.** Three events into the store, in order:
+**What a click does, measured.** Three events, in order:
 
 ```
 removeToolApprovalOverride {toolName}      synchronous, inside the click
@@ -248,9 +248,33 @@ changeRequestStatus        {requestStatus, agentLocator}
 
 and the item's `toolResponse` goes from `{"state":"pending_approval"}` to
 `{"state":"requested"}`. So `answerWithoutARow()` sets that response on the
-pending item, sends `upsertChildContextItem`, and calls `startAgentLoop`, which
-is what issues the status change itself. Only the response is replaced;
-everything else on the item belongs to the page.
+pending item, sends the answer, and calls `startAgentLoop`, which is what issues
+the status change itself. Only the response is replaced; everything else on the
+item belongs to the page.
+
+**Those three names are the wire's, and the reducer does not answer to them.**
+Read as store events they were wrong, and every answer written without a row came
+back from a live session as `Unhandled match for value` naming the whole event,
+which is the same exhaustive-match error `store.dispatch` gives. A name the
+network uses is not necessarily a name the reducer has a case for, and this cost
+a release to find out because the refusal only ever reached the page console.
+
+So `learnEvent()` takes the name from a click instead. It wraps
+`store.agent.onEvent` where the store is found, records the `type` of any event
+carrying a `contextItem` with a `toolResponse`, and calls through untouched; Stop
+puts the property back. The script presses real Allow buttons several times an
+hour whenever the transcript has rendered the row, and every one of them goes
+through there, so the name arrives on its own and is used the next time there is
+no row. `UPSERT_EVENT` is what it starts from and nothing more.
+
+Only the `type` is read. The event carries the item, which is somebody's
+transcript and their tool arguments.
+
+The open question this cannot settle from a fixture: whether the page calls the
+`onEvent` property or a reference it closed over. If it is the latter the wrapper
+never fires, nothing is learned, and the panel says the answer was refused. That
+is the thing to check against a live session, and
+`[Auto FDE] an approval sends …` in the page console is what says it worked.
 
 **`store.dispatch` is not the door.** It refuses the very event its own reducer
 accepts, with `Unhandled match for value`, and the page has never once been
@@ -279,6 +303,19 @@ Arguments are content, and content is not intent.
 **Nothing is reported as answered that the store did not take.** The item is
 read back after the write, and a mismatch is recorded against that item so it is
 attempted once rather than every second. Half answered is worse than waiting.
+
+**A write the reducer throws on is recorded the same way**, and was not: a
+reducer with no case for an event does not grow one between two ticks, and one
+session's console held 1239 identical refusals of the same write, each printing
+the whole event back. `failedToAnswer` is keyed on the item and the event type
+together, so an answer refused under the wire name is tried again once a click
+has taught the reducer's name rather than being written off with the item.
+
+**A refusal never prints the event back.** The page's own message embeds the
+entire event it could not match, which is the item, which is the user's
+transcript and their tool arguments. One of them put a whole Slack message body
+and a handful of RIDs into a console whose contents get pasted into chat windows.
+`shorten()` it.
 
 **Every way out of `answerWithoutARow()` says why, once, in the panel.** A silent
 refusal is indistinguishable from the whole feature being dead, and a reason in a

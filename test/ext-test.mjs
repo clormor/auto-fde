@@ -270,6 +270,90 @@ const STATE_PAGE = `<!doctype html><html><body>
 </script>
 </body></html>`;
 
+// A store whose reducer answers to a different name than the one read off the
+// wire, which is what a live session turned out to be: `upsertChildContextItem`
+// came back as `Unhandled match for value` naming the whole event. The page's own
+// Allow button sends the name the reducer does have, so pressing one is what
+// teaches this script the name to use when there is no button to press.
+//
+// The row and the pill are two separate pending items, so the click answers the
+// first and the second is left with nothing to press, which is the sequence the
+// learning has to survive.
+const PICKY_EVENT = 'setChildContextItemResponse';
+const STATE_LEARN_PAGE = `<!doctype html><html><body>
+<div id="row">
+  <div class="text"><p>Agent wants to read the first record.</p></div>
+  <button id="rowallow" aria-label="Allow this tool use once">Allow</button>
+</div>
+<div id="pill">245 Waiting for tool approval</div>
+
+<script>
+  window.__events = [];
+  window.__refused = [];
+  window.__loops = 0;
+  const pending = { state: 'pending_approval' };
+  let state = {
+    contextMap: {
+      'item-a': { id: 'item-a', type: 'tool-usage', toolName: 'read_first', toolResponse: pending },
+      'item-b': { id: 'item-b', type: 'tool-usage', toolName: 'read_second', toolResponse: pending },
+    },
+  };
+  const store = {
+    getSnapshot: () => state,
+    subscribe: () => {},
+    __setState: updater => { state = updater(state); },
+    agent: {
+      // Exhaustive, the way the real one is: a name it has no case for throws
+      // rather than being ignored.
+      onEvent: (current, event) => {
+        if (event.type !== '${PICKY_EVENT}') {
+          window.__refused.push(event.type);
+          throw new Error('Unhandled match for value: ' + JSON.stringify(event));
+        }
+        window.__events.push(event);
+        const next = JSON.parse(JSON.stringify(current));
+        next.contextMap[event.contextItem.id].toolResponse = event.contextItem.toolResponse;
+        return next;
+      },
+    },
+  };
+  const fiber = {
+    type: { name: 'Anchor' },
+    memoizedProps: {},
+    return: {
+      type: { name: 'AgentLoopHost' },
+      memoizedProps: { startAgentLoop: () => { window.__loops++; } },
+      return: {
+        type: { displayName: 'AgentStoreProvider' },
+        memoizedProps: { value: store },
+        return: null,
+      },
+    },
+  };
+  document.getElementById('pill')['__reactFiber$mock'] = fiber;
+  document.getElementById('rowallow')['__reactFiber$mock'] = fiber;
+
+  // What the page does with its own button, which is the only place the
+  // reducer's name is written down.
+  document.getElementById('rowallow').addEventListener('click', () => {
+    store.__setState(cur => store.agent.onEvent(cur, {
+      type: '${PICKY_EVENT}',
+      contextItem: Object.assign({}, state.contextMap['item-a'],
+        { toolResponse: { state: 'requested' } }),
+    }));
+    document.getElementById('row').remove();
+  });
+</script>
+</body></html>`;
+
+// The same reducer with nothing that will ever satisfy it, for the pace. A name
+// it has no case for is not going to grow one between two ticks.
+const STATE_REFUSING_PAGE = STATE_PAGE.replace(
+  'onEvent: (current, event) => {',
+  `onEvent: (current, event) => {
+        window.__refused = (window.__refused || 0) + 1;
+        throw new Error('Unhandled match for value: ' + JSON.stringify(event));`);
+
 const STATE_BLOCKED_PAGE = STATE_PAGE
   .replace("toolName: 'container_transform_preview'", "toolName: 'delete_dataset'")
   .replace("toolRequest: { branch: 'main' }", "toolRequest: { dataset: 'production-events' }");
@@ -1048,6 +1132,46 @@ check('a prompt the block list refuses is refused here too',
   (await p13.evaluate(() => window.__events)).length === 0
     && (await text(p13, '#af-log')).includes('refused delete_dataset'),
   await text(p13, '#af-log'));
+
+// ---------------------------------------------------------------------------
+// The event name is a measurement and it rotted. `upsertChildContextItem` is the
+// name on the wire and the store's reducer has no case for it, so every answer
+// written without a row came back as `Unhandled match for value`. The name the
+// reducer does have is only written down in the page's own click handler, so it
+// is taken from a click rather than assumed.
+// ---------------------------------------------------------------------------
+const p13b = await mockPage(browser, SESSION_URL, undefined, STATE_LEARN_PAGE);
+await p13b.evaluate(SCRIPT);
+await p13b.waitForTimeout(JUMP_INTERVAL_MS * 2);
+
+const learned = await p13b.evaluate(() => window.__events.map(e => e.type));
+check('the name a click sends is used for the prompt with no row',
+  learned.length === 2 && learned.every(t => t === PICKY_EVENT), JSON.stringify(learned));
+check('and the second prompt was answered, not just attempted',
+  (await p13b.evaluate(() => window.__events[1] && window.__events[1].contextItem.id)) === 'item-b');
+// The wire name is tried once, before anything has been clicked. What must not
+// happen is it being tried again after the reducer has named its objection.
+const refusedTypes = await p13b.evaluate(() => window.__refused);
+check('the name the reducer refuses is not tried twice',
+  refusedTypes.filter(t => t === 'upsertChildContextItem').length <= 1,
+  JSON.stringify(refusedTypes));
+
+// The pace, for a reducer nothing will satisfy. This was retried every second
+// for as long as the prompt was up: one session's console held 1239 identical
+// refusals of the same write, each one printing the whole event back.
+const p13c = await mockPage(browser, SESSION_URL, undefined, STATE_REFUSING_PAGE);
+await p13c.evaluate(SCRIPT);
+await p13c.evaluate(() => {
+  window.__nudge = setInterval(() => document.body.appendChild(document.createElement('span')), 100);
+});
+await p13c.waitForTimeout(JUMP_INTERVAL_MS * (MAX_JUMPS + 1) + 800);
+await p13c.evaluate(() => clearInterval(window.__nudge));
+const refusals = await p13c.evaluate(() => window.__refused);
+check('a write the reducer throws on is attempted once, not every tick',
+  refusals === 1, `attempts=${refusals}`);
+check('and the refusal is in the panel rather than only the console',
+  (await text(p13c, '#af-log')).includes('the session refused a upsertChildContextItem answer'),
+  await text(p13c, '#af-log'));
 
 // ---------------------------------------------------------------------------
 // An AudioContext built before the page has been activated cannot start, and

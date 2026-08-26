@@ -502,6 +502,11 @@
   // with its toolResponse set, then changeRequestStatus. So this sets the same
   // response on the same item and starts the loop, which is what issues the
   // status change itself.
+  // Read off the wire, and the store's reducer does not answer to it: it throws
+  // `Unhandled match for value` naming the whole event, the same exhaustive-match
+  // error store.dispatch gives. A name the network uses is not necessarily a name
+  // the reducer has a case for, so this is a starting point and learnEvent()
+  // replaces it with the one a click is seen to send.
   const UPSERT_EVENT = 'upsertChildContextItem';
   // What a click was measured to write. Learning replaces it when a click is
   // seen, because a measured constant is a constant that can rot.
@@ -521,7 +526,9 @@
 
   let lastStateTryAt = 0;
   let learnedResponse = null;
+  let learnedEvent = null;
   let knownStore = null;
+  let watchedAgent = null;
   let awaitingGrant = null, grantRead = false;
   const refusedWithoutARow = new Set();
   const failedToAnswer = new Set();
@@ -561,6 +568,35 @@
       && !!value.agent && typeof value.agent.onEvent === 'function';
   }
 
+  // The name of the event a click puts into the store, taken from a click rather
+  // than assumed. UPSERT_EVENT is a wire name and the reducer has no case for it,
+  // which is the whole reason answering without a row has never worked on this
+  // build. The script presses real Allow buttons several times an hour whenever
+  // the transcript has rendered the row, and each one goes through here, so the
+  // right name arrives on its own and is used the next time there is no row.
+  //
+  // Passive: the real function is called with the same arguments and its result
+  // returned untouched, and Stop puts it back. Only the type is read. The event
+  // carries the item, which is somebody's transcript and their tool arguments.
+  function learnEvent(store) {
+    const agent = store.agent;
+    if (!agent || watchedAgent === agent) return;
+    watchedAgent = agent;
+    const real = agent.onEvent;
+    agent.onEvent = function (state, event) {
+      if (event && typeof event.type === 'string' && event.contextItem
+          && event.contextItem.toolResponse && learnedEvent !== event.type) {
+        learnedEvent = event.type;
+        console.log(`[Auto FDE] an approval sends ${event.type}`);
+      }
+      return real.apply(this, arguments);
+    };
+    teardown.push(() => {
+      agent.onEvent = real;
+      if (watchedAgent === agent) watchedAgent = null;
+    });
+  }
+
   function getStore(el) {
     if (knownStore) return knownStore;
     let fiber = fiberFor(el);
@@ -568,6 +604,7 @@
       const props = fiber.memoizedProps;
       if (props && typeof props === 'object' && looksLikeStore(props.value)) {
         knownStore = props.value;
+        learnEvent(knownStore);
         return knownStore;
       }
     }
@@ -711,7 +748,12 @@
       store.__setState(current => store.agent.onEvent(current, event));
       return true;
     } catch (err) {
-      console.warn(`[Auto FDE] the session refused the answer: ${err.message}`);
+      // Shortened, because the page's own message embeds the entire event it
+      // could not match, which is the item, which is the user's transcript and
+      // their tool arguments. One refusal put a whole Slack message body and a
+      // handful of RIDs into a console whose contents get pasted into chat
+      // windows.
+      console.warn(`[Auto FDE] the session refused ${event.type}: ${shorten(err.message, RESPONSE_LIMIT)}`);
       return false;
     }
   }
@@ -725,7 +767,13 @@
     if (!map) return decline('the store reports no context map');
     const pending = findPendingItem(map);
     if (!pending) return decline('nothing in the session is pending approval');
-    if (failedToAnswer.has(pending.id)) return false;
+
+    // Keyed on the event as well as the item, so an answer refused under the
+    // wire name is tried again once a click has taught this the reducer's name
+    // rather than being written off with the item.
+    const type = learnedEvent || UPSERT_EVENT;
+    const attempt = `${pending.id}:${type}`;
+    if (failedToAnswer.has(attempt)) return false;
 
     const context = stateContextFor(pending);
     if (BLOCKED_CONTEXT.some(word => context.includes(word))) {
@@ -742,7 +790,16 @@
     // Only the response changes. Everything else on the item belongs to the page,
     // and rewriting any of it would be rewriting somebody's transcript.
     const item = Object.assign({}, pending, { toolResponse: response });
-    if (!writeAnswer(store, { type: UPSERT_EVENT, contextItem: item })) return false;
+    if (!writeAnswer(store, { type, contextItem: item })) {
+      // Recorded, because a reducer with no case for an event will not grow one
+      // between two ticks: this was retried every second for as long as the
+      // prompt was up, and one session's console held 1239 identical refusals of
+      // the same write. Said in the panel too, a console-only failure having
+      // twice now been the reason a stall went unexplained.
+      failedToAnswer.add(attempt);
+      appendLog(new Date().toLocaleTimeString(), `the session refused a ${type} answer`);
+      return false;
+    }
 
     // Verified rather than assumed. A half-answered prompt is worse than a
     // waiting one, so a write the store did not take is reported and left alone.
@@ -752,7 +809,7 @@
       // Recorded against the item, not just reported, so a write the session
       // ignores is attempted once rather than every second for as long as the
       // prompt is up.
-      failedToAnswer.add(pending.id);
+      failedToAnswer.add(attempt);
       appendLog(new Date().toLocaleTimeString(), 'the session would not take the answer');
       console.warn(`[Auto FDE] ${pending.toolName} was answered and the session did not take it.`);
       return false;
