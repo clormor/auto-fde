@@ -42,8 +42,8 @@ panel appears in the bottom right. One of your base URLs is not enough on its
 own: the rest of the Foundry workspace, a Pipeline Builder page for instance, is
 on the same host but is not a session, so the button stays grey there.
 
-The panel has checkboxes for which kinds of prompt to click, a counter, and the
-last ten prompts it clicked. Drag it by the title bar to move it; position and
+The panel has checkboxes for which kinds of prompt to click, the version it is
+running, a counter, and the last ten things it did. Drag it by the title bar to move it; position and
 collapsed state are remembered. Pause and stop are icons in the title bar, so
 they still work when the panel is collapsed down to a single bar with the
 chevron. Paused shows an amber play icon, running shows a green pause icon.

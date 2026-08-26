@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXT = path.join(root, 'auto-fde');
 const SCRIPT = fs.readFileSync(path.join(EXT, 'auto-fde.js'), 'utf8');
+const MANIFEST = JSON.parse(fs.readFileSync(path.join(EXT, 'manifest.json'), 'utf8'));
 
 const ORIGIN = 'https://foundry.example.com';
 const SESSION_URL = `${ORIGIN}/workspace/ai-fde/session/69fa8c21-be1a-4210-bf71-a424d9b0e32d`;
@@ -262,7 +263,9 @@ const gone = page => page.evaluate(() => !document.getElementById('af-host'));
 // The script reads its configuration off the page because a MAIN-world script
 // cannot see chrome.storage. background.js writes it in before injecting; here
 // the test does the same thing by hand.
-async function mockPage(browser, url, config = { origins: [ORIGIN], pathMarker: '/ai-fde/' }, body = PAGE) {
+async function mockPage(browser, url,
+  config = { origins: [ORIGIN], pathMarker: '/ai-fde/', version: MANIFEST.version },
+  body = PAGE) {
   const page = await browser.newPage();
   await page.route('**/*', route =>
     route.fulfill({ status: 200, contentType: 'text/html', body }));
@@ -311,20 +314,31 @@ check('handle exposed on window', await p1.evaluate(() => !!window.__autoFde));
 const hits = await p1.evaluate(() => window.__hits);
 check('clicked the read-category Allow', hits.includes('allow1'), JSON.stringify(hits));
 check('clicked the write-category Allow', hits.includes('allow3'));
+check('clicked the deploy-category Allow, ticked by default', hits.includes('allow2'));
+check('clicked a prompt matching read and deploy', hits.includes('allow6'));
 check('left "Always allow" alone', !hits.includes('always1'));
-check('left the deploy-category Allow alone (off by default)', !hits.includes('allow2'));
 check('left the disabled button alone', !hits.includes('allow4'));
 // The block list reads the prompt, not the button label. An exact match on
 // "Allow" already rules out "Always allow", so a label-only list matched nothing
 // at all; what it has to catch is what the prompt is asking for.
 check('left a prompt naming a blocked word alone', !hits.includes('allow5'));
-// Categories are matched riskiest first. This prompt matches read and deploy,
-// and read winning would let a deploy through with its category switched off.
-check('judged a read-and-deploy prompt by the riskier of the two',
-  !hits.includes('allow6'));
 
 const count = await text(p1, '#af-count');
-check('counter matches the number of clicks', count === '2', `counter=${count}`);
+check('counter matches the number of clicks', count === '4', `counter=${count}`);
+
+// The version is the one thing that says which revision is running, and the
+// manifest is the only place it is written down.
+check('the header shows the version it was injected with',
+  (await text(p1, '#af-version')) === `v${MANIFEST.version}`,
+  await text(p1, '#af-version'));
+
+// The log holds resumes and refusals as well as clicks, so it is not captioned
+// as clicks.
+check('the log is captioned as activity', await p1.evaluate(() => {
+  const root = document.getElementById('af-host').shadowRoot;
+  return root.querySelector('#af-log').closest('.sec').querySelector('.cap')
+    .textContent.trim() === 'Recent activity';
+}));
 
 // The transport controls are icons in the header, not labelled buttons in a
 // footer, so that they still work when the panel is collapsed.
@@ -416,15 +430,41 @@ check('nothing renders in a monospace font', await p1.evaluate(() => {
     .every(el => !/monospace|courier/i.test(getComputedStyle(el).fontFamily));
 }));
 
-// turning the deploy category on should release the one it held back
+// Unticking a category has to hold its prompts back, and categories are matched
+// riskiest first rather than in display order: the second prompt below matches
+// read and deploy, and read winning would let a deploy through with the deploy
+// category off. Both need prompts the panel has not already answered.
+await press(p1, 'input[data-cat="deploy"]');
+await p1.evaluate(() => {
+  const add = (id, words) => {
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.innerHTML = `<p>${words}</p>`;
+    const allow = document.createElement('button');
+    allow.id = id;
+    allow.textContent = 'Allow';
+    dialog.appendChild(allow);
+    document.body.appendChild(dialog);
+  };
+  add('allow7', 'Agent wants to deploy the build to the staging stack.');
+  add('allow8', 'Agent wants to deploy the pipeline build, view the plan first.');
+});
+await p1.waitForTimeout(1200);
+const afterDeployOff = await p1.evaluate(() => window.__hits);
+check('unticking deploy holds a deploy prompt back', !afterDeployOff.includes('allow7'),
+  JSON.stringify(afterDeployOff));
+check('judged a read-and-deploy prompt by the riskier of the two',
+  !afterDeployOff.includes('allow8'));
+
+// turning the deploy category back on should release the ones it held back
 await press(p1, 'input[data-cat="deploy"]');
 await p1.evaluate(() => document.body.appendChild(document.createElement('span'))); // nudge the observer
 await p1.waitForTimeout(1200);
 const afterDeployOn = await p1.evaluate(() => window.__hits);
 check('deploy Allow clicked once its category is enabled',
-  afterDeployOn.includes('allow2'));
+  afterDeployOn.includes('allow7'));
 check('the read-and-deploy prompt goes through once deploy is enabled',
-  afterDeployOn.includes('allow6'));
+  afterDeployOn.includes('allow8'));
 check('a prompt naming a blocked word stays blocked with every category on',
   !afterDeployOn.includes('allow5'));
 
@@ -475,9 +515,10 @@ check('a prompt is approved faster than any timer in the old path allowed',
   (await p1.evaluate(() => window.__hits)).includes('background'));
 
 // ---------------------------------------------------------------------------
-// The panel must not grow with the click count. Twelve more prompts on top of
-// the five already handled takes the log well past its limit.
+// The panel must not grow with the click count. Twelve more prompts takes the
+// log well past its limit while the counter keeps every one of them.
 // ---------------------------------------------------------------------------
+const beforeBulk = Number(await text(p1, '#af-count'));
 await p1.evaluate(() => {
   for (let i = 0; i < 12; i++) {
     const d = document.createElement('div');
@@ -494,7 +535,7 @@ check(`log holds at most ${LOG_LIMIT} rows once more than that has been clicked`
 
 const bulkCount = Number(await text(p1, '#af-count'));
 check('the counter keeps the running total the log does not',
-  bulkCount === 18, `counter=${bulkCount}`);
+  bulkCount === beforeBulk + 12, `counter=${bulkCount}, was ${beforeBulk}`);
 
 const fitsViewport = await p1.evaluate(() => {
   const r = document.getElementById('af-host').getBoundingClientRect();

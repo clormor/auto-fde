@@ -15,13 +15,13 @@ of those prompts in advance.
 The script clicks a button labelled exactly `Allow` or `Allow once`, so
 `Always allow`, `Allow all future` and `Deny` are never candidates. It then
 skips the prompt outright if the prompt's own text mentions `delete`, `force` or
-`production`, and the deploy/build category is off until you turn it on.
-Practical consequences worth stating out loud:
+`production`. Practical consequences worth stating out loud:
 
+- Every category is ticked by default, so the categories narrow nothing until
+  you untick one. What holds a prompt back out of the box is the block list.
 - Categories are matched on the prompt's visible text with a handful of regexes,
   riskiest category first. A prompt whose wording does not mention read, write,
-  edit, update, create, deploy, build, publish or run falls into `Unclassified`,
-  which is enabled. The default is to allow anything the script cannot classify.
+  edit, update, create, deploy, build, publish or run falls into `Unclassified`.
 - The block list is three words in a substring match on the prompt, not a
   reading of what the action does. A destructive action whose prompt does not
   happen to use one of them gets clicked.
@@ -70,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  88 assertions: the in-page script and the packaged
+npm run test:browser  92 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -81,9 +81,10 @@ be a second copy to keep in step with this one. Git history has the old
 packaging script if this ever goes to the Chrome Web Store, which does want a
 zip with `manifest.json` at the root.
 
-The version in the manifest is the only version in the repo, and Chrome shows it
-on the extension's card, which is the only way anyone can tell which revision
-they are running. `node --check` decides how to parse a `.js` file from the
+The version in the manifest is the only version in the repo. Chrome shows it on
+the extension's card, `background.js` passes it to the page in
+`__autoFdeConfig`, and the panel shows it in its header, so a bug report can name
+a revision without anyone opening `chrome://extensions`. `node --check` decides how to parse a `.js` file from the
 nearest `package.json`, which is why the one at the repo root sets
 `"type": "module"`; `check.sh` cd's to its own directory, so that file is always
 in scope.
@@ -323,10 +324,10 @@ removed is a worse state than either setting.
 
 **Categories are matched riskiest first, which is not the order they are shown
 in.** A prompt reading "deploy the build, view the plan first" matches both read
-and deploy, and taking the first match in display order classed it as read,
-which let a deploy through with the deploy category switched off. Each category
-carries a `risk` and `BY_RISK` sorts on it; `other` matches everything and has
-the lowest risk, so it stays the fallback.
+and deploy, and taking the first match in display order classes it as read, which
+lets a deploy through with the deploy category unticked. Each category carries a
+`risk` and `BY_RISK` sorts on it; `other` matches everything and has the lowest
+risk, so it stays the fallback.
 
 **The block list reads the prompt, not the button.** `TARGET_LABELS` is an exact
 match on `allow` or `allow once`, so a list of blocked labels can never match
