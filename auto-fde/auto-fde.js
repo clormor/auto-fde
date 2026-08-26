@@ -305,7 +305,19 @@
       .find(el => NETWORK_PATTERNS.some(re => re.test(el.textContent || '')));
   }
 
-  function findSendButton() { return document.querySelector('button[aria-label="Send message"]'); }
+  // The send control. One exact aria-label was the whole of this, which is the
+  // same brittleness that stopped Allow buttons being matched: a label is
+  // Foundry's to rename and this had no second way to find it. aria-label across
+  // every button first, since that is what the control actually carries, then the
+  // visible text, which catches one whose label has been renamed but still reads
+  // Send.
+  const SEND_LABEL = /send message|^send$|submit/i;
+  function findSendButton() {
+    const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+    return buttons.find(btn => SEND_LABEL.test(collapse(btn.getAttribute('aria-label'))))
+      || buttons.find(btn => SEND_LABEL.test(collapse(btn.innerText) || collapse(btn.textContent)))
+      || null;
+  }
   function findFallbackTextarea() {
     return Array.from(document.querySelectorAll('textarea'))
       .find(t => /rich prompt editor is unavailable/i.test(t.placeholder || ''));
@@ -409,9 +421,6 @@
   // will not go in: a request needs its words, so it fails; the resume only needs
   // the session moving, which an empty send does, so it reports which it did.
   async function composeAndSend(text, { requireText }) {
-    const sendBtn = findSendButton();
-    if (!sendBtn) return { ok: false, error: 'no send button on this page' };
-
     const textarea = findFallbackTextarea();
     let carriedText = false;
 
@@ -441,7 +450,18 @@
     // a prompt click that lands late is a session left sitting unanswered.
     await new Promise(r => setTimeout(r, 300));
     if (stopped) return { ok: false, error: 'stopped' };
-    if (!sendBtn.isConnected) return { ok: false, error: 'the send button went away' };
+
+    // Looked for after the text is in, not before. A composer with nothing in it
+    // need not render the control at all, and looking first reported no send
+    // button on a page that grows one the moment it has something to send. It is
+    // also found fresh rather than held across the two waits, since the page
+    // re-renders the composer around the text and a reference taken before that
+    // is a detached node.
+    const sendBtn = findSendButton();
+    if (!sendBtn) {
+      const seen = document.querySelectorAll('button, [role="button"]').length;
+      return { ok: false, error: `no send button on this page (${seen} controls seen)` };
+    }
     sendBtn.click();
     return { ok: true, carriedText };
   }

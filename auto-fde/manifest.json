@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Auto FDE",
-  "version": "4.8.0",
+  "version": "4.9.0",
   "description": "Clicks Allow prompts in a Foundry AI FDE session, keeps the tab awake, resumes after network errors, and lets apps on your device reply in the chat.",
   "permissions": [
     "scripting",
