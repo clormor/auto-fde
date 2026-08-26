@@ -1,7 +1,7 @@
 # Auto FDE
 
 A Chrome extension that clicks the `Allow` prompts in a Palantir Foundry AI FDE
-session for you. One button, no DevTools, no pasting.
+session for you.
 
 It answers a class of consent prompts in advance, which is a choice rather than
 a convenience. Before leaving it running, read
@@ -76,25 +76,22 @@ again to start it back up.
 
 ## Working in another tab
 
-It just works, and this is the part worth understanding.
-
 Chrome stops drawing a tab you are not looking at, and Foundry will not add a row
 to a page it is not drawing, so a prompt that arrives while you are elsewhere has
 no button anywhere on the page. Nothing that clicks buttons can answer it.
 
 So the panel does not click one. The pending approval is in the session's own
-state the whole time, and that is where the answer is written, exactly as pressing
-Allow writes it, followed by the same start of the agent loop the button triggers.
-That works in a background tab, behind another window, on another desktop. The log
-shows those with `no row` after the category.
+state the whole time, and that is where the answer is written, exactly as
+pressing Allow writes it. That works in a background tab, behind another window,
+on another desktop. The log shows those with `no row` after the category.
 
 Two things still apply. The block list is checked against the tool's name, so
-anything mentioning deleting, forcing or production is refused and says so in the
-log. And an answer the session does not accept is reported rather than retried,
-because a half-answered prompt is worse than a waiting one.
+anything mentioning deleting, forcing or production is refused and says so in
+the log. And an answer the session does not accept is reported rather than
+retried, because a half-answered prompt is worse than a waiting one.
 
-Clicking once in the tab after you open the panel is still worth doing, since
-that is what lets the keep-alive start. The log says so if it has not.
+Click once in the tab after you open the panel: that is what lets the keep-alive
+start. The log says so if it has not.
 
 ## If nothing happens
 
