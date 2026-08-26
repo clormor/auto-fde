@@ -637,13 +637,58 @@
   }
 
   // ---------- Writing the answer ----------
+  // What the state route could actually see, for when it declines. The reason
+  // names which check stopped it; this names what was there, which is the
+  // difference between the session's shape having moved and there being nothing
+  // to answer. Without it a decline says a store is unreachable and not what was
+  // reachable instead, and the next step is guesswork.
+  //
+  // Keys and response states only. A context map is somebody's transcript and a
+  // tool request is their data, and this goes into a console whose contents get
+  // pasted into chat windows.
+  const REPORT_KEYS = 12;
+  function storeReport() {
+    const marker = findPendingMarker();
+    if (!marker) return 'pill=none';
+    const store = getStore(marker);
+    if (!store) return 'pill=yes store=none';
+    const snapshot = snapshotOf(store);
+    if (!snapshot) return 'pill=yes store=yes snapshot=none';
+    const map = snapshot.contextMap;
+    if (!map || typeof map !== 'object') {
+      return 'pill=yes store=yes contextMap=none'
+        + ` snapshot=[${Object.keys(snapshot).slice(0, REPORT_KEYS).join(' ')}]`;
+    }
+    const states = [];
+    let shape = 'none';
+    for (const key of Object.keys(map)) {
+      const holder = findToolResponse(map[key], 0);
+      if (!holder) continue;
+      if (shape === 'none') shape = Object.keys(holder).slice(0, REPORT_KEYS).join(' ');
+      const state = holder.toolResponse && holder.toolResponse.state;
+      if (typeof state !== 'string') continue;
+      // Whether the holder carries an id is load-bearing: findPendingItem() needs
+      // one, so an item nested a level deeper than expected reads as nothing
+      // pending at all.
+      states.push(holder.id ? state : `${state} (no id)`);
+    }
+    return `pill=yes store=yes items=${Object.keys(map).length}`
+      + ` responses=[${states.slice(0, REPORT_KEYS).join(' | ') || 'none'}]`
+      + ` item=[${shape}]`;
+  }
+
   // Every way out of here used to be silent, which made a refusal look identical
-  // to the feature being dead. Each reason is said once.
+  // to the feature being dead. Each reason is said once, and it goes in the panel
+  // as well as the console: the console is a different console from the service
+  // worker's, nobody outside this repo opens either, and a reason nobody reads is
+  // the same as no reason. That is twice now that the fact needed to fix a stall
+  // was sitting in a console while the panel said something unactionable.
   const declined = new Set();
   function decline(reason) {
     if (!declined.has(reason)) {
       declined.add(reason);
-      console.warn(`[Auto FDE] no-button answer declined: ${reason}`);
+      appendLog(new Date().toLocaleTimeString(), reason);
+      console.warn(`[Auto FDE] no-button answer declined: ${reason}. ${storeReport()}`);
     }
     return false;
   }
@@ -1029,6 +1074,8 @@
       const w = document.createElement('span');
       w.className = 'w';
       w.textContent = entry.what;
+      // The line ellipsises at the panel's width, and the reasons are sentences.
+      w.title = entry.what;
       row.append(t, w);
       return row;
     }));

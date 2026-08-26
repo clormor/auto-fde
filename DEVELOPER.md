@@ -70,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  96 assertions: the in-page script and the packaged
+npm run test:browser  97 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -280,8 +280,23 @@ Arguments are content, and content is not intent.
 read back after the write, and a mismatch is recorded against that item so it is
 attempted once rather than every second. Half answered is worse than waiting.
 
-**Every way out of `answerWithoutARow()` says why, once.** A silent refusal is
-indistinguishable from the whole feature being dead.
+**Every way out of `answerWithoutARow()` says why, once, in the panel.** A silent
+refusal is indistinguishable from the whole feature being dead, and a reason in a
+console is very nearly as silent: it is not the service worker console the
+extension's own errors go to, and nobody outside this repo opens either. Twice
+now the fact needed to fix a stall has been sitting in a console while the panel
+said something unactionable, so the reason goes in the log, once per reason, with
+a `title` on the row since the line ellipsises at the panel's width.
+
+`storeReport()` goes to the console beside it and names what the route could
+reach rather than what it could not: whether there is a pill, a store, a
+snapshot, a `contextMap`, how many items are in it, the `toolResponse.state` of
+each, and the keys of the first item found. That last pair is what would catch
+the session's shape moving, `findPendingItem()` needing an `id` on the holder
+that carries the `toolResponse`, so an item nested one level deeper than expected
+reads as nothing pending at all. Keys and states only: a context map is somebody's
+transcript and a tool request is their data, and this gets pasted into chat
+windows.
 
 **Foundry's own approval settings are not a substitute.** The session metadata
 carries `toolApprovalSettingsOverrides` and `bulkApprovalSettings`, with

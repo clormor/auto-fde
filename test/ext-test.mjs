@@ -881,6 +881,13 @@ check(`a pill that leads nowhere is tried ${MAX_JUMPS} times and then slowed dow
   deadPresses === MAX_JUMPS, `presses=${deadPresses}`);
 check('a prompt still out of reach is reported in the log',
   (await text(p9, '#af-log')).includes('off-screen prompt still out of reach'));
+// The pill leads nowhere and carries no fiber, so the state route cannot reach a
+// store from it. Which check stopped it is the one fact that says what to do
+// next, and it used to be in the page console, which is neither the console the
+// extension's own errors go to nor one anybody opens.
+check('and the reason the state route declined is in the log too',
+  (await text(p9, '#af-log')).includes("the session's store is not reachable from the pill"),
+  await text(p9, '#af-log'));
 
 // Being looked at is the one event that changes whether a jump can work, because
 // Chrome starts producing frames again. It is also the only one the script can be
