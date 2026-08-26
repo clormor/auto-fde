@@ -349,6 +349,17 @@ reads as nothing pending at all. Keys and states only: a context map is somebody
 transcript and a tool request is their data, and this gets pasted into chat
 windows.
 
+**403s on the page's own `PUT /ai-fde/api/threads/{id}`, and `Failed to save
+session`.** Seen alongside a session driven from outside, and not caused by this
+extension: the initiator is Foundry's own bundle. A thread updated out of turn
+leaves the open page holding a version it no longer has, and the save it then
+attempts does not carry every context item, so the server refuses it rather than
+letting an old save overwrite newer progress. `PROTOCOL.md` in `ai-fde-prompter`
+covers the same ground from the API side and notes that a stale `threadVersion`
+gives a 409; this is the neighbouring case. Known, not fixed, and a reload clears
+it. Do not read one of these as the panel having half-answered something: that
+condition has its own report, and is checked by reading the item back.
+
 **Foundry's own approval settings are not a substitute.** The session metadata
 carries `toolApprovalSettingsOverrides` and `bulkApprovalSettings`, with
 `askUser` against `autoApprove` per tool. They do not cover every tool and do
@@ -489,6 +500,22 @@ reason.
 `[data-slate-string]`, which is what Slate renders its model into, and refuses
 when the text is not there. An empty send is not a no-op: the session answers it
 by running its previous turn again, which looks and logs like a delivered reply.
+
+**The send control is found after the text is in, and by pattern.** Both halves
+were wrong and produced `no send button on this page` against a composer that
+plainly has one. Looked up first, a composer with nothing in it need not render
+one at all; held across the two 300ms waits, the page re-renders the composer
+around the text and the reference is a detached node. And the lookup was a single
+exact `aria-label`, which is the same brittleness that stopped Allow buttons
+being matched. It is `aria-label` across every `button` and `[role="button"]`
+first, then visible text, the pattern `ai-fde-prompter` already uses against this
+page. The failure counts the controls it saw, so the next report says whether the
+page had none or the match missed.
+
+One consequence, deliberate: a send that fails now leaves the text in the
+composer, where before the early return meant nothing was ever inserted. That is
+the better of the two, the text being visible and the failure reported, but it
+does mean a refused request leaves something for the user to clear.
 
 **Requests from apps on this device.** The request arrives as
 `data-auto-fde-request` on the body and the outcome goes back as

@@ -78,6 +78,12 @@
   const PROMPT_LEVELS = 5;
   const PROMPT_LIMIT = 400;
   const PROMPT_MIN_CHARS = 12;
+  // A ceiling on the walk, not on the answer. The text budget alone does not
+  // bound it: a container holding nothing but controls contributes no characters
+  // and is walked to the end, and five levels above a transcript row is the
+  // transcript. This runs inside the MutationObserver callback on a page that
+  // mutates constantly, so it needs a stop that does not depend on what it finds.
+  const PROMPT_NODES = 400;
 
   // The words in a container that are not on its buttons. `Allow` and `Deny` are
   // controls, so a container holding nothing else is the action row and not the
@@ -87,8 +93,9 @@
   function promptTextOf(el) {
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
     const parts = [];
-    let size = 0;
-    for (let node = walker.nextNode(); node && size < PROMPT_LIMIT; node = walker.nextNode()) {
+    let size = 0, seen = 0;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (size >= PROMPT_LIMIT || ++seen > PROMPT_NODES) break;
       if (node.parentElement && node.parentElement.closest('button, [role="button"]')) continue;
       parts.push(node.nodeValue);
       size += (node.nodeValue || '').length;
