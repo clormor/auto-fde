@@ -19,7 +19,7 @@ skips the prompt outright if the prompt's own text mentions `delete`, `force` or
 
 - Every category is ticked by default, so the categories narrow nothing until
   you untick one. What holds a prompt back out of the box is the block list.
-- Categories are matched on the prompt's visible text with a handful of regexes,
+- Categories are matched on the prompt's own text with a handful of regexes,
   riskiest category first. A prompt whose wording does not mention read, write,
   edit, update, create, deploy, build, publish or run falls into `Unclassified`.
 - The block list is three words in a substring match on the prompt, not a
@@ -70,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  92 assertions: the in-page script and the packaged
+npm run test:browser  96 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -319,6 +319,46 @@ anything that exact match has not already excluded, and `delete`, `force` and
 the prompt's text, which is where the risk is. `always` and `forever` stay out
 of that list: a prompt offering `Allow` beside `Always allow` carries the second
 label in its own text, and blocking on it would refuse the ordinary case.
+
+**Nothing about a prompt is read through a property that needs layout, and
+nothing is read off the button's parent.** Both were, and both were wrong on the
+real page in a way no fixture caught, because every fixture put the prompt in a
+`role="dialog"` with a bare `<button>` in it. A real approval is a transcript
+row: it is not a dialog, the sentence is a sibling of the buttons rather than
+their parent's text, and the buttons carry an `aria-label` describing the action
+rather than naming the control.
+
+- `promptContextFor()` fell back to `btn.parentElement`, which is the action row,
+  whose text is `Deny Allow`. So every prompt in a live session classified as
+  `Unclassified` and the block list never saw the word it exists to catch: a
+  prompt naming `production` was clicked. It now climbs to the first ancestor
+  carrying words that are not on a button, bounded by `PROMPT_LEVELS` because the
+  container above the row is the transcript and matching the block list against a
+  whole session would refuse on something somebody typed an hour ago.
+- `labelFor()` read `aria-label` ahead of `textContent`. `innerText` is empty for
+  a row the page has not laid out, which is the state a windowed transcript keeps
+  its off-screen rows in, so the aria-label answered, and `Allow this tool use
+  once` is not in `TARGET_LABELS`. The row went unmatched, the pill above it was
+  still up, and the panel reported `off-screen prompt still out of reach` with
+  the button sitting in the document. `aria-label` now goes last, where it only
+  answers for a button with no text of its own, which is what it is for.
+
+Both read `textContent` through `collapse()`, since `textContent` keeps the
+newlines a button written across three lines of JSX has between its words and
+`TARGET_LABELS` is an exact match.
+
+**The stall report names which of the two states it is.** `unmatchedAllows()`
+counts buttons whose `textContent` is exactly a target label and that have not
+been pressed. None of them is the page not having rendered the row, which nothing
+here can fix; one of them is a row in the document that is not being matched,
+which is a bug in this file. The two read identically in the panel, and the fact
+that separated them was only ever in the console, which is what left the bug
+above unfound. The panel now says `a prompt is on the page and was not matched`
+for the second.
+
+**A refusal is said out loud in both routes.** `answerWithoutARow()` always named
+the prompts it held back; the click path returned silently, so a blocked prompt
+looked exactly like the script having died. Once per button, via `refused`.
 
 **Every setting's default lives in the markup**, and the variable behind it is
 read from the checkbox at startup, so the two cannot drift. All three settings

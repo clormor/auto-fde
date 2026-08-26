@@ -45,25 +45,84 @@
   ];
   const BY_RISK = [...CATEGORIES].sort((a, b) => b.risk - a.risk);
 
-  // innerText is what a person reads off the button, which is what TARGET_LABELS
-  // is written against, so it comes first. It is empty for a subtree the page is
-  // not rendering, and textContent needs no rendering at all, so it is the
-  // fallback: a button in the document whose text is exactly one of the labels is
-  // one to press whether or not the page is drawing it. This is not the fix for a
-  // prompt in a hidden tab, where there is no button in the document to read.
-  function labelFor(btn) {
-    return (btn.innerText || btn.getAttribute('aria-label') || btn.textContent || '').trim();
+  // Runs of whitespace, which textContent keeps and innerText does not. A button
+  // written across three lines of JSX has newlines between its words, and
+  // TARGET_LABELS is an exact match, so the fallback below is unusable without
+  // this.
+  function collapse(text) {
+    return (text || '').replace(/\s+/g, ' ').trim();
   }
 
+  // innerText is what a person reads off the button, which is what TARGET_LABELS
+  // is written against, so it comes first. It is empty for a subtree the page is
+  // not laying out, and textContent needs none, so textContent is the fallback: a
+  // button in the document whose text is exactly one of the labels is one to
+  // press whether or not the page is drawing it.
+  //
+  // aria-label goes last, and the order is the whole point. Foundry's approval
+  // buttons carry one, and it describes the action rather than naming the
+  // control: `Allow this tool use once` is not in TARGET_LABELS. Ahead of
+  // textContent it answered for every button the page had not laid out, so a row
+  // sitting in the document went unmatched and was reported as out of reach.
+  // Behind it, it only answers for a button with no text of its own, which is
+  // what it is for.
+  function labelFor(btn) {
+    return collapse(btn.innerText) || collapse(btn.textContent)
+      || collapse(btn.getAttribute('aria-label'));
+  }
+
+  // What is being asked for, which is what the block list and the categories are
+  // matched against. How far up to look for it, and how much of a container has
+  // to be words before it counts as the prompt rather than the row of controls
+  // the button sits in.
+  const PROMPT_LEVELS = 5;
+  const PROMPT_LIMIT = 400;
+  const PROMPT_MIN_CHARS = 12;
+
+  // The words in a container that are not on its buttons. `Allow` and `Deny` are
+  // controls, so a container holding nothing else is the action row and not the
+  // prompt, and this is what says so. textContent throughout, because a windowed
+  // transcript keeps its off-screen rows in the document and does not lay them
+  // out, and innerText is empty for every one of them.
+  function promptTextOf(el) {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    const parts = [];
+    let size = 0;
+    for (let node = walker.nextNode(); node && size < PROMPT_LIMIT; node = walker.nextNode()) {
+      if (node.parentElement && node.parentElement.closest('button, [role="button"]')) continue;
+      parts.push(node.nodeValue);
+      size += (node.nodeValue || '').length;
+    }
+    return collapse(parts.join(' ')).slice(0, PROMPT_LIMIT).toLowerCase();
+  }
+
+  // An approval on this page is a transcript row, not a dialog, so the dialog
+  // selector matches nothing and the fallback used to be the button's own parent,
+  // which is the action row and whose text is `Allow Deny`. Every prompt
+  // therefore classified as Unclassified and the block list never saw a word of
+  // what was being asked for. So the search climbs to the first ancestor that carries
+  // words of its own, which is the innermost thing holding the sentence. Bounded,
+  // because the container above the row is the transcript, and matching the block
+  // list against a whole session would refuse on a word somebody typed an hour
+  // ago.
   function promptContextFor(btn) {
-    const container = btn.closest('[role="dialog"], [role="alertdialog"], .dialog, .modal') || btn.parentElement;
-    return (container?.innerText || '').slice(0, 400).toLowerCase();
+    const dialog = btn.closest('[role="dialog"], [role="alertdialog"], .dialog, .modal');
+    if (dialog) return promptTextOf(dialog);
+    let el = btn.parentElement;
+    for (let level = 0; el && level < PROMPT_LEVELS; level++, el = el.parentElement) {
+      const text = promptTextOf(el);
+      if (text.length >= PROMPT_MIN_CHARS) return text;
+    }
+    return '';
   }
   function categoryFor(context) {
     return BY_RISK.find(c => c.match(context));
   }
 
   const clicked = new WeakSet();
+  // Prompts the block list has held back, so each is said once rather than on
+  // every mutation for as long as the row is up.
+  const refused = new WeakSet();
   let active = true, count = 0;
 
   // Stop can be followed by another press of the toolbar button on the same
@@ -1155,6 +1214,19 @@
       + ` allow=[${labels.join(' | ') || 'none'}] allowByText=${byText}`;
   }
 
+  // Buttons this script would press if it could read them, counted off
+  // textContent, which needs no rendering of any kind. One of these sitting
+  // unpressed is a row that is in the document and is not being matched, which is
+  // a bug in this file; none of them is the page not having rendered the row,
+  // which nothing here can fix. The two states read identically in the panel and
+  // need different reports, and the fact that separates them was only ever in the
+  // console.
+  function unmatchedAllows() {
+    return Array.from(document.querySelectorAll('button')).filter(btn =>
+      !clicked.has(btn) && !btn.disabled
+      && TARGET_LABELS.includes(collapse(btn.textContent).toLowerCase())).length;
+  }
+
   function reachPendingPrompt() {
     const now = Date.now();
 
@@ -1202,8 +1274,12 @@
     // it will not render.
     if (jumpAttempts >= MAX_JUMPS && !reportedStall) {
       reportedStall = true;
-      appendLog(new Date().toLocaleTimeString(), 'off-screen prompt still out of reach');
-      console.warn(`[Auto FDE] off-screen prompt still out of reach; slowing down. ${stallReport()}`);
+      const unmatched = unmatchedAllows();
+      const what = unmatched
+        ? 'a prompt is on the page and was not matched'
+        : 'off-screen prompt still out of reach';
+      appendLog(new Date().toLocaleTimeString(), what);
+      console.warn(`[Auto FDE] ${what}; slowing down. ${stallReport()}`);
     }
   }
 
@@ -1224,7 +1300,18 @@
         sawPrompt = true;
         if (clicked.has(btn) || btn.disabled) return;
         const context = promptContextFor(btn);
-        if (BLOCKED_CONTEXT.some(word => context.includes(word))) return;
+        // Said out loud. The count simply stopping moving is what a refusal used
+        // to look like, which is indistinguishable from the script having died,
+        // and the no-row route has always named the prompts it held back.
+        const blocked = BLOCKED_CONTEXT.find(word => context.includes(word));
+        if (blocked) {
+          if (!refused.has(btn)) {
+            refused.add(btn);
+            appendLog(new Date().toLocaleTimeString(), `refused a prompt naming ${blocked}`);
+            console.warn(`[Auto FDE] a prompt naming "${blocked}" is on the block list`);
+          }
+          return;
+        }
         const cat = categoryFor(context);
         if (!cat.enabled) return;
 

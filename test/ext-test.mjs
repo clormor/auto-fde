@@ -176,6 +176,47 @@ const DEAD_PILL_PAGE = `<!doctype html><html><body>
 </script>
 </body></html>`;
 
+// An approval shaped the way the real one is, which none of the pages above are.
+// Three things about it, all of them load-bearing and all of them missed while
+// every fixture put the prompt in a role="dialog" with a bare button in it:
+// the row is not a dialog, so the dialog selector matches nothing; the prompt
+// sentence is a sibling of the buttons rather than their parent's text; and the
+// buttons carry an aria-label describing the action rather than naming the
+// control.
+const TRANSCRIPT_PAGE = `<!doctype html><html><body style="margin:0">
+<div id="scroller" style="height:400px;overflow-y:auto">
+  <div style="height:2000px">transcript</div>
+  <div class="row">
+    <div class="text"><p>Agent wants to delete the production dataset.</p></div>
+    <div class="actions">
+      <button id="deny" aria-label="Deny this tool use">Deny</button>
+      <button id="blocked" aria-label="Allow this tool use once">Allow</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  window.__hits = [];
+  document.addEventListener('click', e => {
+    if (e.target.tagName === 'BUTTON' && e.target.id) window.__hits.push(e.target.id);
+  }, true);
+</script>
+</body></html>`;
+
+// The same shape with a prompt that is allowed to go through, and with the row
+// in the document and not laid out, which is the state a windowed transcript
+// keeps its off-screen rows in. content-visibility:hidden is what that costs:
+// innerText is empty for everything inside it and textContent is not.
+const UNRENDERED_PAGE = `<!doctype html><html><body style="margin:0">
+<div class="row" style="content-visibility:hidden">
+  <div class="text"><p>Agent wants to read the pending record.</p></div>
+  <div class="actions">
+    <button id="unrendered" aria-label="Allow this tool use once">Allow</button>
+  </div>
+</div>
+<div id="pill">244 Waiting for tool approval</div>
+</body></html>`;
+
 // The state of a hidden tab, as measured: a pending pill, no row, no button, and
 // the pending item sitting in a store that is still reachable. The one shape
 // where answering has to happen without anything to press.
@@ -850,6 +891,36 @@ await p9.evaluate(() => clearInterval(window.__nudge));
 const afterLook = await deadPillPresses(p9);
 check('looking at the tab starts the attempts again rather than waiting',
   afterLook === deadPresses + 1, `presses=${afterLook}`);
+
+// ---------------------------------------------------------------------------
+// Reading the prompt, and reading the button. Both were read through properties
+// that need the page to have laid the row out, and both were read off the wrong
+// element, which between them let a blocked prompt through and reported a row
+// sitting in the document as out of reach.
+// ---------------------------------------------------------------------------
+const p9b = await mockPage(browser, SESSION_URL, undefined, TRANSCRIPT_PAGE);
+await p9b.evaluate(SCRIPT);
+await p9b.waitForTimeout(600);
+// The button's own parent is the action row and its text is "Deny Allow", so
+// every prompt on a real page classified as Unclassified and the block list
+// never saw the word it exists to catch.
+const transcriptHits = await p9b.evaluate(() => window.__hits);
+check('the block list reads a prompt that is not in a dialog',
+  !transcriptHits.includes('blocked'), JSON.stringify(transcriptHits));
+check('and the refusal is in the log rather than silent',
+  (await text(p9b, '#af-log')).includes('refused a prompt naming delete'));
+
+const p9c = await mockPage(browser, SESSION_URL, undefined, UNRENDERED_PAGE);
+await p9c.evaluate(SCRIPT);
+await p9c.waitForTimeout(JUMP_INTERVAL_MS * (MAX_JUMPS + 1) + 800);
+// aria-label ahead of textContent answered for every button the page had not
+// laid out, and the aria-label is a sentence rather than the label, so the row
+// went unmatched and the pill above it was reported as unreachable.
+const unrenderedLog = await text(p9c, '#af-log');
+check('a button the page has not laid out is still matched',
+  unrenderedLog.includes('Allow \u00b7 read'), unrenderedLog);
+check('so a row that is in the document is never called out of reach',
+  !unrenderedLog.includes('out of reach'), unrenderedLog);
 
 // ---------------------------------------------------------------------------
 // A ticked keep-alive box whose audio never started looks exactly like one that
