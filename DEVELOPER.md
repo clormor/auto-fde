@@ -70,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  110 assertions: the in-page script and the packaged
+npm run test:browser  117 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -405,6 +405,46 @@ covers the same ground from the API side and notes that a stale `threadVersion`
 gives a 409; this is the neighbouring case. Known, not fixed, and a reload clears
 it. Do not read one of these as the panel having half-answered something: that
 condition has its own report, and is checked by reading the item back.
+
+**A turn that stopped part-way, and how it is told from one that finished.**
+Moving between masts drops the agent loop's continuation. The client sets itself
+idle, renders no banner and reports no error, and the session sits until somebody
+types, because typing is what starts the loop again. `autoResumeEnabled` cannot
+catch it: that watches for a banner, and there is none.
+
+Measured off a live session across twenty minutes of ordinary work:
+
+```
+agentStatus.type   awaiting_response for the whole of a turn, tools included
+                   idle between turns
+requestStatus.type none throughout. Says nothing; do not read it
+```
+
+Idle alone is not the signal, because idle is also what waiting for the user
+looks like. The last item in `contextOrder` is what separates them:
+
+```
+idle + assistant-message      finished; the user's turn
+idle + tool-usage completed   the loop took the result and stopped
+```
+
+The second cannot be a finished turn. A model handed a tool result owes a reply,
+so a turn ending there is one that was dropped. That is a structural check rather
+than a timeout, which is what makes it safe to act on: a session genuinely waiting
+for its user can never satisfy it.
+
+`STALL_GRACE_MS` is 30s. A tool completing and the loop carrying on took four to
+six seconds on the session this was measured from, and the grace is counted from
+the item rather than the clock, so an ordinary turn never approaches it. Once per
+item id: a restart that does not take is not worth repeating every two seconds.
+
+`restartTurn()` calls `startAgentLoop`, the page's own continuation, which adds
+nothing to the transcript. Failing that it presses send on an **empty** composer,
+which `PROTOCOL.md` records as running a turn on what is already in the thread
+without adding a user item, and only with Slate's placeholder showing, since
+pressing send on somebody's half-written message would send it. Neither writes
+anything in the user's name, which is what separates this from the network-error
+resume and why it is the mildest of the three settings that act.
 
 **Foundry's own approval settings are not a substitute.** The session metadata
 carries `toolApprovalSettingsOverrides` and `bulkApprovalSettings`, with

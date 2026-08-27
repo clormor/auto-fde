@@ -390,6 +390,56 @@ const STATE_BLOCKED_PAGE = STATE_PAGE
   .replace("toolName: 'container_transform_preview'", "toolName: 'delete_dataset'")
   .replace("toolRequest: { branch: 'main' }", "toolRequest: { dataset: 'production-events' }");
 
+// A turn that stopped part-way, in the shape measured off a live session: the
+// agent idle, and the last item in contextOrder a tool call whose result came
+// back. Nothing is pending, nothing is in flight, and the session sits there.
+//
+// The three states this has to tell apart, all taken from the same session's
+// twenty minutes of readings:
+//   awaiting_response + anything   working, tools included
+//   idle + assistant-message       finished; the user's turn
+//   idle + tool-usage completed    dropped
+const TURN_PAGE = (status, lastType, lastState) => `<!doctype html><html><body>
+<div id="chat" role="combobox" contenteditable="true"><span data-slate-string="true"></span></div>
+<span data-slate-placeholder="true"></span>
+<button data-testid="ai-fde-send-button" id="send" aria-label="Send message"></button>
+
+<script>
+  window.__loops = 0;
+  window.__hits = [];
+  document.addEventListener('click', e => {
+    if (e.target.tagName === 'BUTTON' && e.target.id) window.__hits.push(e.target.id);
+  }, true);
+  const item = { id: 'last-1', type: '${lastType}', toolName: 'container_edit_file' };
+  ${lastState ? `item.toolResponse = { state: '${lastState}' };` : ''}
+  let state = {
+    agentStatus: { type: '${status}' },
+    requestStatus: { type: 'none' },
+    contextOrder: ['last-1'],
+    contextMap: { 'last-1': item },
+  };
+  const store = {
+    getSnapshot: () => state,
+    subscribe: () => {},
+    __setState: updater => { state = updater(state); },
+    agent: { onEvent: (current) => current },
+  };
+  document.getElementById('send')['__reactFiber$mock'] = {
+    type: { name: 'SendButton' },
+    memoizedProps: {},
+    return: {
+      type: { name: 'AgentLoopHost' },
+      memoizedProps: { startAgentLoop: () => { window.__loops++; } },
+      return: {
+        type: { displayName: 'AgentStoreProvider' },
+        memoizedProps: { value: store },
+        return: null,
+      },
+    },
+  };
+</script>
+</body></html>`;
+
 const results = [];
 const check = (name, pass, detail = '') => {
   results.push({ name, pass });
@@ -1257,6 +1307,69 @@ check('a store neither route can write to is tried once per route, not per tick'
 check('and the refusal is in the panel rather than only the console',
   (await text(p13d, '#af-log')).includes('the session refused a upsertChildContextItem answer'),
   await text(p13d, '#af-log'));
+
+// ---------------------------------------------------------------------------
+// A turn that stopped part-way. The client sets itself idle and shows nothing,
+// so the only thing that says a turn was dropped rather than finished is the last
+// item: a model handed a tool result owes a reply, so a turn ending on one was
+// never finished.
+// ---------------------------------------------------------------------------
+const STALL_GRACE_MS = 30000;
+
+// The grace period is longer than a test should wait, so the clock is moved
+// rather than waited on: Date.now is put forward once the item has been seen.
+async function turnPage(body) {
+  const page = await mockPage(browser, SESSION_URL, undefined, body);
+  await page.evaluate(SCRIPT);
+  await page.waitForTimeout(600);
+  await page.evaluate(ms => {
+    const real = Date.now;
+    Date.now = () => real() + ms;
+  }, STALL_GRACE_MS + 5000);
+  await page.waitForTimeout(2600);
+  return page;
+}
+
+const p15 = await turnPage(TURN_PAGE('idle', 'tool-usage', 'completed'));
+check('a turn that stopped on a finished tool call is restarted',
+  (await p15.evaluate(() => window.__loops)) === 1,
+  `loops=${await p15.evaluate(() => window.__loops)}`);
+check('and the restart is in the log, naming the tool',
+  (await text(p15, '#af-log')).includes('restarted the turn after container_edit_file'),
+  await text(p15, '#af-log'));
+// The page's own continuation adds nothing to the transcript, so send is left
+// alone when it is in reach.
+check('the send control is not pressed when the loop can be started',
+  !(await p15.evaluate(() => window.__hits)).includes('send'));
+
+// The one that must never fire. Idle with the agent's own message last is the
+// session waiting for the user, which is most of the time.
+const p16 = await turnPage(TURN_PAGE('idle', 'assistant-message', ''));
+check('a session waiting for the user is left alone',
+  (await p16.evaluate(() => window.__loops)) === 0
+    && !(await text(p16, '#af-log')).includes('restarted'),
+  await text(p16, '#af-log'));
+
+// A turn in progress, which is what a tool result looks like a second after it
+// arrives and for as long as the agent is working.
+const p17 = await turnPage(TURN_PAGE('awaiting_response', 'tool-usage', 'completed'));
+check('a turn still running is left alone',
+  (await p17.evaluate(() => window.__loops)) === 0, await text(p17, '#af-log'));
+
+// A tool still going. Idle should not be seen here at all, but the response state
+// is the second half of the rule and is worth holding to.
+const p18 = await turnPage(TURN_PAGE('idle', 'tool-usage', 'loading'));
+check('a tool that has not finished is left alone',
+  (await p18.evaluate(() => window.__loops)) === 0, await text(p18, '#af-log'));
+
+// Before the grace period, nothing happens: a tool completing and the loop
+// carrying on took four to six seconds on the session this was measured from.
+const p19 = await mockPage(browser, SESSION_URL, undefined,
+  TURN_PAGE('idle', 'tool-usage', 'completed'));
+await p19.evaluate(SCRIPT);
+await p19.waitForTimeout(3000);
+check('a tool that has just finished is given time to carry on by itself',
+  (await p19.evaluate(() => window.__loops)) === 0);
 
 // ---------------------------------------------------------------------------
 // An AudioContext built before the page has been activated cannot start, and

@@ -306,6 +306,7 @@
   // Set from the checkbox, which carries the default so the two cannot drift.
   let autoResumeEnabled = false;
   let bridgeEnabled = false;
+  let restartStalledEnabled = false;
   let recovering = false;
   // Stop has to reach a send that is between its two waits, so the waits check
   // this rather than a timer handle being cleared.
@@ -349,7 +350,14 @@
     return false;
   }
 
+  // The test id first, measured off a live session and the only handle here that
+  // is neither a label Foundry can rename nor a guess about which control belongs
+  // to the composer.
+  const SEND_TESTID = '[data-testid="ai-fde-send-button"]';
+
   function findSendButton() {
+    const byTestId = document.querySelector(SEND_TESTID);
+    if (byTestId) return byTestId;
     const matches = Array.from(document.querySelectorAll('button, [role="button"]'))
       .filter(btn => SEND_LABEL.test(collapse(btn.getAttribute('aria-label')))
         || SEND_LABEL.test(collapse(btn.innerText) || collapse(btn.textContent)));
@@ -1167,6 +1175,11 @@
             <span>Accept messages from apps on this device</span>
           </label>
           <div class="hint">An app on your device can reply in this chat while you are away.</div>
+          <label class="row" style="margin-top:5px">
+            <input type="checkbox" id="af-restart-toggle" checked>
+            <span>Restart a turn that stopped part-way</span>
+          </label>
+          <div class="hint">Carries on where a dropped connection left the agent.</div>
         </div>
 
         <div class="sec">
@@ -1246,6 +1259,15 @@
   const bridgeBox = shadow.querySelector('#af-bridge-toggle');
   bridgeBox.onchange = e => { bridgeEnabled = e.target.checked; };
   bridgeEnabled = bridgeBox.checked;
+
+  // Ticked, for the reason all of them are: the tab is in the background and
+  // nobody is watching it, which is the situation this exists for. It earns a
+  // checkbox rather than being unconditional because it starts work in somebody's
+  // session, but it is the mildest of the three that do: it writes nothing to the
+  // thread and says nothing in the user's name, it only asks the page to carry on.
+  const restartBox = shadow.querySelector('#af-restart-toggle');
+  restartBox.onchange = e => { restartStalledEnabled = e.target.checked; };
+  restartStalledEnabled = restartBox.checked;
 
   // Neither answering a prompt with no button nor telling the page it is in front
   // is a preference. The first is the job; the second is how the page is kept
@@ -1392,6 +1414,110 @@
     const what = carriedText ? 'sent the resume message' : 'resumed the session, without the text';
     appendLog(t, what);
     console.log(`[Auto FDE] ${t} — ${what}`);
+  }
+
+  // ---------- A turn that stopped part-way ----------
+  // Measured off a live session across twenty minutes of ordinary work.
+  // agentStatus.type reads `awaiting_response` for the whole of a turn, tools
+  // included, and `idle` between turns. requestStatus.type stayed `none`
+  // throughout and says nothing worth reading.
+  //
+  // Idle alone is not the signal, because idle is also what waiting for the user
+  // looks like. The last item in contextOrder is what separates them:
+  //
+  //   idle + assistant-message       the agent has finished; it is the user's turn
+  //   idle + tool-usage completed    the loop took the result and stopped
+  //
+  // The second is not a finished turn. A model handed a tool result owes a reply,
+  // so a turn ending there is one that was dropped, which is what moving between
+  // masts does to it: the continuation never goes out, the client sets itself
+  // idle, and nothing anywhere reports an error. The session then sits until
+  // somebody types, because typing is what starts the loop again.
+  const IDLE_STATUS = /^idle$/i;
+  const DONE_RESPONSE = /^completed$/i;
+  // A tool completing and the loop carrying on took four to six seconds on the
+  // session this was measured from. Thirty is well outside that and still well
+  // inside the minutes a dropped turn otherwise sits for.
+  const STALL_GRACE_MS = 30000;
+
+  let stalledItem = '', stalledSince = 0;
+  const restarted = new Set();
+
+  // The store, from something that is always on the page. getStore() is reached
+  // from the pending pill or from a button about to be pressed, and a turn that
+  // stopped has neither: no prompt is what the problem is.
+  function reachStore() {
+    if (knownStore) return knownStore;
+    const anchor = document.querySelector(SEND_TESTID) || findRichInput();
+    return anchor ? getStore(anchor) : null;
+  }
+
+  function droppedTurn(store) {
+    const snapshot = snapshotOf(store);
+    const order = snapshot && snapshot.contextOrder;
+    if (!Array.isArray(order) || !order.length) return null;
+    const id = order[order.length - 1];
+    const item = snapshot.contextMap && snapshot.contextMap[id];
+    if (!item) return null;
+    const status = (snapshot.agentStatus && snapshot.agentStatus.type) || '';
+    const state = (item.toolResponse && item.toolResponse.state) || '';
+    if (!IDLE_STATUS.test(status)) return null;
+    if (item.type !== 'tool-usage' || !DONE_RESPONSE.test(state)) return null;
+    return { id, toolName: item.toolName || 'a tool' };
+  }
+
+  // startAgentLoop is the page's own continuation and adds nothing to the
+  // transcript, so it is the first choice. Failing that, the page's send control
+  // on an empty composer runs a turn on what is already in the thread and adds no
+  // user item either. Neither writes anything in the user's name, which is what
+  // separates this from the network-error resume.
+  function restartTurn(dropped) {
+    const anchor = document.querySelector(SEND_TESTID) || findRichInput();
+    const start = anchor && propFrom(anchor, ['startAgentLoop'], 'function');
+    if (start) {
+      try {
+        start();
+        appendLog(new Date().toLocaleTimeString(), `restarted the turn after ${dropped.toolName}`);
+        console.log(`[Auto FDE] the turn after ${dropped.toolName} had stopped; started the loop again.`);
+        return;
+      } catch (err) {
+        console.warn(`[Auto FDE] the agent loop would not start: ${reasonFrom(err)}`);
+      }
+    }
+    // Only with the composer empty. Slate renders its placeholder when its model
+    // is empty and not otherwise, so this is the page saying there is no draft to
+    // send, and pressing send on somebody's half-written message would send it.
+    const sendBtn = findSendButton();
+    if (!sendBtn || !document.querySelector('[data-slate-placeholder="true"]')) {
+      appendLog(new Date().toLocaleTimeString(), 'a turn stopped and could not be restarted');
+      console.warn('[Auto FDE] a turn stopped part-way and there is no way to restart it in reach.');
+      return;
+    }
+    sendBtn.click();
+    appendLog(new Date().toLocaleTimeString(), `restarted the turn after ${dropped.toolName}`);
+    console.log(`[Auto FDE] the turn after ${dropped.toolName} had stopped; pressed send on an empty composer.`);
+  }
+
+  function watchForDroppedTurn() {
+    if (!restartStalledEnabled) return;
+    const store = reachStore();
+    if (!store) return;
+    const dropped = droppedTurn(store);
+    if (!dropped) { stalledItem = ''; stalledSince = 0; return; }
+
+    // The grace period is measured from the item, not from the clock, so a tool
+    // completing and the loop carrying on normally never reaches it.
+    if (dropped.id !== stalledItem) {
+      stalledItem = dropped.id;
+      stalledSince = Date.now();
+      return;
+    }
+    if (Date.now() - stalledSince < STALL_GRACE_MS) return;
+    // Once per item. A restart that does not take is not worth repeating every
+    // two seconds, and the log says it happened.
+    if (restarted.has(dropped.id)) return;
+    restarted.add(dropped.id);
+    restartTurn(dropped);
   }
 
   // ---------- Reaching a prompt that is not on the page ----------
@@ -1602,6 +1728,9 @@
       const banner = findErrorBanner();
       if (banner && !handledBanners.has(banner)) handleErrorBanner(banner);
     }
+    // After the banner, and not instead of it. A connection that came back with a
+    // banner to show has one; this is the case where nothing was shown at all.
+    if (!recovering) watchForDroppedTurn();
   }
 
   const observer = new MutationObserver(() => scan());
