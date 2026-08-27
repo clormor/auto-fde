@@ -688,6 +688,13 @@
         learnedEvent = event.type;
         appendLog(new Date().toLocaleTimeString(), `learned that an approval sends ${event.type}`);
         console.log(`[Auto FDE] an approval sends ${event.type}`);
+        // The name was never the whole of it. The item beside it is what this
+        // script builds by hand, and building it wrong is what the reducer's
+        // exhaustive match was objecting to. Keys and the response, no values:
+        // the item is the user's transcript and their tool arguments.
+        console.log('[Auto FDE] an approval carries an item shaped'
+          + ` [${Object.keys(event.contextItem).join(' ')}]`
+          + ` with a response of ${JSON.stringify(event.contextItem.toolResponse)}`);
       }
       return real.apply(this, arguments);
     };
@@ -884,46 +891,6 @@
     }
   }
 
-  // The route left when the reducer has no case for the event. It sets the
-  // response on the item and hands the store the state, which is the same single
-  // field the reducer would have set and nothing besides: no other item is
-  // touched and nothing on this one is rewritten. It is second, not preferred,
-  // because the reducer may do bookkeeping this cannot see, and it is not
-  // trusted either: the caller reads the item back and records a write that did
-  // not stick, and the log says which route answered.
-  function writeResponseDirectly(store, pending, response) {
-    // Only where the pending item is the map's own value. findToolResponse()
-    // searches ITEM_SEARCH_DEPTH levels down, so the holder it returns need not
-    // be map[id]: it can be something nested under it. Assigning to map[id] then
-    // has two ways to go wrong, and the second is the dangerous one. The id may
-    // not be a key at all, in which case nothing is written and this used to
-    // report that it had been. Or it is a key, and the write adds a second
-    // toolResponse at the top level while the real one underneath stays pending
-    // — and the read-back finds the outer one, matches, and starts the agent loop
-    // on a prompt nobody answered. That is the half-answered state, reached by
-    // the one route with no reducer to catch it.
-    const target = snapshotOf(store);
-    const holder = target && target.contextMap && target.contextMap[pending.id];
-    if (!holder || !holder.toolResponse) {
-      console.warn('[Auto FDE] the pending item is not the session\'s own map entry;'
-        + ' it will not be written to directly.');
-      return false;
-    }
-    try {
-      store.__setState(current => {
-        const map = current && current.contextMap;
-        if (!map || !map[pending.id] || !map[pending.id].toolResponse) return current;
-        const item = Object.assign({}, map[pending.id], { toolResponse: response });
-        return Object.assign({}, current,
-          { contextMap: Object.assign({}, map, { [pending.id]: item }) });
-      });
-      return true;
-    } catch (err) {
-      console.warn(`[Auto FDE] the session refused a direct write: ${reasonFrom(err)}`);
-      return false;
-    }
-  }
-
   function answerWithoutARow(anchor) {
     const response = learnedResponse || DEFAULT_RESPONSE;
     const store = getStore(anchor);
@@ -956,18 +923,13 @@
     // Only the response changes. Everything else on the item belongs to the page,
     // and rewriting any of it would be rewriting somebody's transcript.
     const item = Object.assign({}, pending, { toolResponse: response });
-    let route = 'no row';
     if (!writeAnswer(store, { type, contextItem: item })) {
-      // The reducer having no case for the event is not something that changes
-      // between two ticks, so the direct write is tried here rather than the
-      // whole thing being retried every second: one session's console held 1239
+      // Recorded rather than retried: a reducer that refuses an event does not
+      // change its mind between two ticks, and one session's console held 1239
       // identical refusals of the same write.
-      if (!writeResponseDirectly(store, pending, response)) {
-        failedToAnswer.add(attempt);
-        appendLog(new Date().toLocaleTimeString(), `the session refused a ${type} answer`);
-        return false;
-      }
-      route = 'no row, direct';
+      failedToAnswer.add(attempt);
+      appendLog(new Date().toLocaleTimeString(), `the session refused a ${type} answer`);
+      return false;
     }
 
     // Verified rather than assumed. A half-answered prompt is worse than a
@@ -996,7 +958,7 @@
     } else {
       console.warn('[Auto FDE] no way to start the agent loop is in reach.');
     }
-    record(pending.toolName || 'prompt', `${cat.id} · ${route}`);
+    record(pending.toolName || 'prompt', `${cat.id} · no row`);
     return true;
   }
 

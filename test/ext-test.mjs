@@ -360,10 +360,10 @@ const STATE_REFUSING_PAGE = STATE_PAGE.replace(
         throw new Error('Unhandled match for value: ' + JSON.stringify(event));`);
 
 // The pending item nested under the map entry rather than being it, which is the
-// shape ITEM_SEARCH_DEPTH exists for. Writing the response straight onto
-// map[id] here would add a second toolResponse above the real one, and the
-// read-back would find the outer one, match, and start the agent loop on a prompt
-// nobody answered.
+// shape ITEM_SEARCH_DEPTH exists for. Nothing here may write to map[id] on the
+// strength of a holder found underneath it: that would put a second toolResponse
+// above the real one, and a read-back would find the outer one, match, and start
+// the agent loop on a prompt nobody answered.
 const STATE_NESTED_PAGE = STATE_REFUSING_PAGE.replace(
   "toolResponse: { state: 'pending_approval' },",
   "content: { id: 'item-7', toolResponse: { state: 'pending_approval' } },");
@@ -1260,23 +1260,24 @@ check('an agent that cannot be watched is reported, not assumed silent',
 check('and the prompt is still answered',
   (await p13e.evaluate(() => window.__events)).length === 1);
 
-// A reducer that refuses every name this script has is a live session, and the
-// prompt still has to be answered. Setting the response on the item and handing
-// the store the state writes the same single field the reducer would have, so it
-// is what is left. It is second and it is not trusted: the item is read back, and
-// the log says which route answered.
+// A reducer that refuses the event is where this stops. Writing the response
+// into the store around it was tried and taken out again: it set the same single
+// field the reducer would have, and a live session crashed to Foundry's error
+// boundary the second it did, having presumably read something off a response
+// this script had built by hand. Going through the reducer or not at all is the
+// only safe pair, since the reducer is the only thing that knows what a complete
+// answer looks like.
 const p13c = await mockPage(browser, SESSION_URL, undefined, STATE_REFUSING_PAGE);
 await p13c.evaluate(SCRIPT);
 await p13c.waitForTimeout(JUMP_INTERVAL_MS * 2);
-check('a prompt the reducer will not take is answered directly instead',
-  (await text(p13c, '#af-log')).includes('no row, direct'),
-  await text(p13c, '#af-log'));
-check('and the direct write set the response, not something else',
+check('a prompt the reducer will not take is left alone, not written around',
   (await p13c.evaluate(() => JSON.stringify(window.__snapshot()))) ===
-    JSON.stringify({ state: 'requested' }),
+    JSON.stringify({ state: 'pending_approval' }),
   await p13c.evaluate(() => JSON.stringify(window.__snapshot())));
-check('the agent loop is started after a direct write too',
-  (await p13c.evaluate(() => window.__loops)) === 1);
+check('and nothing is reported answered, nor the agent loop started',
+  (await p13c.evaluate(() => window.__loops)) === 0
+    && (await text(p13c, '#af-log')).includes('the session refused a upsertChildContextItem answer'),
+  await text(p13c, '#af-log'));
 
 // Half answered is worse than waiting, and the direct write is the one route with
 // no reducer to catch it.
@@ -1302,8 +1303,8 @@ await p13d.evaluate(() => {
 await p13d.waitForTimeout(JUMP_INTERVAL_MS * (MAX_JUMPS + 1) + 800);
 await p13d.evaluate(() => clearInterval(window.__nudge));
 const writes = await p13d.evaluate(() => window.__writes);
-check('a store neither route can write to is tried once per route, not per tick',
-  writes === 2, `writes=${writes}`);
+check('a store that will not be written to is tried once, not every tick',
+  writes === 1, `writes=${writes}`);
 check('and the refusal is in the panel rather than only the console',
   (await text(p13d, '#af-log')).includes('the session refused a upsertChildContextItem answer'),
   await text(p13d, '#af-log'));

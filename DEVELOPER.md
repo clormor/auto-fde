@@ -70,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  117 assertions: the in-page script and the packaged
+npm run test:browser  116 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -331,15 +331,25 @@ transcript and their tool arguments. One of them put a whole Slack message body
 and a handful of RIDs into a console whose contents get pasted into chat windows.
 `shorten()` it.
 
-**The direct write only touches a pending item that is the map's own value.**
-`findToolResponse()` searches `ITEM_SEARCH_DEPTH` levels down, so the holder it
-returns need not be `map[id]`. Assigning to `map[id]` regardless has two ways to
-go wrong and the second is the dangerous one: the id may not be a key, in which
-case nothing is written and it reported that it had been; or it is a key, and the
-write adds a second `toolResponse` above the real one, which stays pending, and
-the read-back finds the outer one, matches, and starts the agent loop on a prompt
-nobody answered. Half answered, by the one route with no reducer to catch it. So
-the holder is checked against the map entry first, and a nested one is refused.
+**Do not write the response into the store around the reducer.** It was tried:
+when the reducer refused the event, `writeResponseDirectly()` set the same single
+field the reducer would have set, verified by reading it back. It answered
+prompts, and a live session then went to Foundry's error boundary, `An error
+occurred`, in the same second the panel logged `the session would not take the
+answer`. The likeliest reading is that a response this script builds by hand is
+incomplete: a real one carries more than `state`, a completed one carrying
+`contextItemIds` as well, and something downstream reads a field that is not
+there. The reducer is the only thing that knows what a whole answer looks like,
+so the pair is through the reducer or not at all.
+
+What that leaves is the item. `learnEvent()` now logs the keys of the
+`contextItem` the page sends on a real approval and its `toolResponse` whole,
+which is the shape a correct answer has to be built to. Keys and the response
+only; the rest of the item is somebody's transcript. The evidence also says the
+event name was never the problem: a live session learned `upsertChildContextItem`
+from the page's own click, which is the name that came back as `Unhandled match
+for value`, so the exhaustive match was objecting to the item and not the type.
+Read that log line before attempting the write again.
 
 **The event name is learned only while a click of this script's own is in
 flight.** Carrying a `contextItem` with a `toolResponse` is not enough on its own:
