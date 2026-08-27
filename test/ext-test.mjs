@@ -47,6 +47,13 @@ const PAGE = `<!doctype html><html><body style="font-family:sans-serif">
   <button id="allow6">Allow</button>
 </div>
 
+<!-- enforcement contains force, and a substring match refused an ordinary
+     Slack message on it the first day the block list could match anything. -->
+<div role="dialog" id="d6">
+  <p>Agent wants to send the marking membership enforcement summary.</p>
+  <button id="allow-enforce">Allow</button>
+</div>
+
 <div role="dialog" id="d3">
   <p>Agent wants to create and update the ontology object.</p>
   <button id="allow4" disabled>Allow</button>
@@ -529,9 +536,13 @@ check('left the disabled button alone', !hits.includes('allow4'));
 // "Allow" already rules out "Always allow", so a label-only list matched nothing
 // at all; what it has to catch is what the prompt is asking for.
 check('left a prompt naming a blocked word alone', !hits.includes('allow5'));
+// The block list is matched at a word boundary, never as a substring: it holds
+// back what the agent is about to do, not every sentence a stem appears in.
+check('a longer word merely containing a blocked one is not refused',
+  hits.includes('allow-enforce'), JSON.stringify(hits));
 
 const count = await text(p1, '#af-count');
-check('counter matches the number of clicks', count === '4', `counter=${count}`);
+check('counter matches the number of clicks', count === '5', `counter=${count}`);
 
 // The version is the one thing that says which revision is running, and the
 // manifest is the only place it is written down.

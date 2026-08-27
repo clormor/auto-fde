@@ -22,7 +22,7 @@ skips the prompt outright if the prompt's own text mentions `delete`, `force` or
 - Categories are matched on the prompt's own text with a handful of regexes,
   riskiest category first. A prompt whose wording does not mention read, write,
   edit, update, create, deploy, build, publish or run falls into `Unclassified`.
-- The block list is three words in a substring match on the prompt, not a
+- The block list is three words matched at a word boundary on the prompt, not a
   reading of what the action does. A destructive action whose prompt does not
   happen to use one of them gets clicked.
 - Auto-resume is on by default, and it writes into the chat on your behalf. It
@@ -70,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  116 assertions: the in-page script and the packaged
+npm run test:browser  117 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -484,6 +484,21 @@ and deploy, and taking the first match in display order classes it as read,
 which lets a deploy through with the deploy category unticked. Each category
 carries a `risk` and `BY_RISK` sorts on it; `other` matches everything and has
 the lowest risk, so it stays the fallback.
+
+**The block list matches at a word boundary, never as a substring.**
+`enforcement` contains `force`, and a live session refused an ordinary
+`Send Slack Message` on it the first day the list was capable of matching
+anything at all: for as long as `promptContextFor()` was reading the button's
+parent, the context was `Deny Allow` and no word in the list could ever hit.
+`reproduction` and `undelete` are the same trap. The boundary is at the front
+only, so the inflections that matter still count: deleted, forced, forcing.
+
+Worth knowing before widening the list: the DOM route now reads the whole
+rendered prompt, parameters included, so an `execute_action` puts an entire Slack
+message body into the context. That is the thing `stateContextFor()` deliberately
+avoids on the other route, arguments being content and content not being intent.
+A word added here is matched against somebody's message text as well as against
+what the agent is doing.
 
 **The block list reads the prompt, not the button.** `TARGET_LABELS` is an exact
 match on `allow` or `allow once`, so a list of blocked labels can never match

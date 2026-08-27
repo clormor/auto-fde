@@ -32,6 +32,19 @@
   // on it would refuse the ordinary case.
   const BLOCKED_CONTEXT = ['delete', 'force', 'production'];
 
+  // Matched at a word boundary, never as a substring. `enforcement` contains
+  // `force`, and a live session refused an ordinary Slack message on it the first
+  // day the list was capable of matching anything at all; `reproduction` and
+  // `undelete` are the same trap waiting. The boundary is at the front only, so
+  // the inflections that matter are still caught: deleted, deletes, forced,
+  // forcing, forcefully.
+  const BLOCKED_PATTERNS = BLOCKED_CONTEXT.map(word => new RegExp('\\b' + word, 'i'));
+
+  function blockedWordIn(context) {
+    const found = BLOCKED_PATTERNS.findIndex(pattern => pattern.test(context));
+    return found < 0 ? null : BLOCKED_CONTEXT[found];
+  }
+
   // `risk` is the order the categories are matched in, highest first, and it is
   // not the order they are displayed in. A prompt matching more than one has to
   // be judged by the riskiest thing it matches, or `Deploy the build, view the
@@ -909,7 +922,7 @@
     if (failedToAnswer.has(attempt)) return false;
 
     const context = stateContextFor(pending);
-    if (BLOCKED_CONTEXT.some(word => context.includes(word))) {
+    if (blockedWordIn(context)) {
       if (!refusedWithoutARow.has(pending.id)) {
         refusedWithoutARow.add(pending.id);
         appendLog(new Date().toLocaleTimeString(), `refused ${pending.toolName || 'a prompt'}`);
@@ -1656,7 +1669,7 @@
         // Said out loud. The count simply stopping moving is what a refusal used
         // to look like, which is indistinguishable from the script having died,
         // and the no-row route has always named the prompts it held back.
-        const blocked = BLOCKED_CONTEXT.find(word => context.includes(word));
+        const blocked = blockedWordIn(context);
         if (blocked) {
           if (!refused.has(btn)) {
             refused.add(btn);
