@@ -19,7 +19,7 @@ skips the prompt outright if the prompt's own text mentions `delete`, `force` or
 
 - Every category is ticked by default, so the categories narrow nothing until
   you untick one. What holds a prompt back out of the box is the block list.
-- Categories are matched on the prompt's visible text with a handful of regexes,
+- Categories are matched on the prompt's own text with a handful of regexes,
   riskiest category first. A prompt whose wording does not mention read, write,
   edit, update, create, deploy, build, publish or run falls into `Unclassified`.
 - The block list is three words in a substring match on the prompt, not a
@@ -70,7 +70,7 @@ npm test              49 assertions: the gate, the origin parser, the tooltip
 ./check.sh            required files, manifest parses, all JS parses, version
 
 npm install && npx playwright install chromium   (once)
-npm run test:browser  92 assertions: the in-page script and the packaged
+npm run test:browser  110 assertions: the in-page script and the packaged
                       extension. Needed for anything touching auto-fde.js,
                       manifest.json, options.* or the injection path.
 ```
@@ -238,7 +238,7 @@ in the page's own context and the session's store is reachable from the pending
 pill, which is in the document even in a hidden tab, so the answer is written
 where the click writes it.
 
-**What a click does, measured.** Three events into the store, in order:
+**What a click does, measured.** Three events, in order:
 
 ```
 removeToolApprovalOverride {toolName}      synchronous, inside the click
@@ -248,9 +248,47 @@ changeRequestStatus        {requestStatus, agentLocator}
 
 and the item's `toolResponse` goes from `{"state":"pending_approval"}` to
 `{"state":"requested"}`. So `answerWithoutARow()` sets that response on the
-pending item, sends `upsertChildContextItem`, and calls `startAgentLoop`, which
-is what issues the status change itself. Only the response is replaced;
-everything else on the item belongs to the page.
+pending item, sends the answer, and calls `startAgentLoop`, which is what issues
+the status change itself. Only the response is replaced; everything else on the
+item belongs to the page.
+
+**Those three names are the wire's, and the reducer does not answer to them.**
+Read as store events they were wrong, and every answer written without a row came
+back from a live session as `Unhandled match for value` naming the whole event,
+which is the same exhaustive-match error `store.dispatch` gives. A name the
+network uses is not necessarily a name the reducer has a case for, and this cost
+a release to find out because the refusal only ever reached the page console.
+
+So `learnEvent()` takes the name from a click instead. It wraps
+`store.agent.onEvent` where the store is found, records the `type` of any event
+carrying a `contextItem` with a `toolResponse`, and calls through untouched; Stop
+puts the property back. The script presses real Allow buttons several times an
+hour whenever the transcript has rendered the row, and every one of them goes
+through there, so the name arrives on its own and is used the next time there is
+no row. `UPSERT_EVENT` is what it starts from and nothing more.
+
+Only the `type` is read. The event carries the item, which is somebody's
+transcript and their tool arguments.
+
+The wrap is checked rather than assumed. This file is not a module, so the
+assignment is not in strict mode, and a frozen object or an accessor with no
+setter takes it silently and leaves the original in place, which reads exactly
+like a page that never calls the property. `Object.defineProperty` is tried next,
+and if the property still is not the wrapper it is said out loud.
+
+The watch ignores this script's own writes, via `writingOurOwn`. Without that it
+learns the name it just guessed, announces that an approval sends it, and is no
+better informed.
+
+**When the reducer has no case for any name held, the response is written
+directly.** `writeResponseDirectly()` sets `toolResponse` on the pending item and
+hands the store the state: the same single field the reducer would have set,
+nothing else on the item rewritten and no other item touched. It is second rather
+than preferred, because the reducer may do bookkeeping this cannot see. It is not
+trusted either: the item is read back the same way, a write that did not stick is
+recorded against item and event type, and the log says `no row, direct` so the
+route that answered is never a guess. `failedToAnswer` covers both routes, so a
+store neither can write to costs one attempt each rather than one per tick.
 
 **`store.dispatch` is not the door.** It refuses the very event its own reducer
 accepts, with `Unhandled match for value`, and the page has never once been
@@ -280,8 +318,93 @@ Arguments are content, and content is not intent.
 read back after the write, and a mismatch is recorded against that item so it is
 attempted once rather than every second. Half answered is worse than waiting.
 
-**Every way out of `answerWithoutARow()` says why, once.** A silent refusal is
-indistinguishable from the whole feature being dead.
+**A write the reducer throws on is recorded the same way**, and was not: a
+reducer with no case for an event does not grow one between two ticks, and one
+session's console held 1239 identical refusals of the same write, each printing
+the whole event back. `failedToAnswer` is keyed on the item and the event type
+together, so an answer refused under the wire name is tried again once a click
+has taught the reducer's name rather than being written off with the item.
+
+**A refusal never prints the event back.** The page's own message embeds the
+entire event it could not match, which is the item, which is the user's
+transcript and their tool arguments. One of them put a whole Slack message body
+and a handful of RIDs into a console whose contents get pasted into chat windows.
+`shorten()` it.
+
+**The direct write only touches a pending item that is the map's own value.**
+`findToolResponse()` searches `ITEM_SEARCH_DEPTH` levels down, so the holder it
+returns need not be `map[id]`. Assigning to `map[id]` regardless has two ways to
+go wrong and the second is the dangerous one: the id may not be a key, in which
+case nothing is written and it reported that it had been; or it is a key, and the
+write adds a second `toolResponse` above the real one, which stays pending, and
+the read-back finds the outer one, matches, and starts the agent loop on a prompt
+nobody answered. Half answered, by the one route with no reducer to catch it. So
+the holder is checked against the map entry first, and a nested one is refused.
+
+**The event name is learned only while a click of this script's own is in
+flight.** Carrying a `contextItem` with a `toolResponse` is not enough on its own:
+the tool's result comes back the same shape under a different type seconds later,
+and whichever arrived last became the name used for the next answer.
+`awaitingGrant` is set immediately before the click and cleared once the item is
+seen to change, which is exactly the window an approval occupies.
+
+**`watchedAgents` is a set, not a slot.** The console changes route without
+reloading, so a session can be left and come back to. A single slot held the
+agent from the session in between, and coming back wrapped the wrapper: each
+round trip added a layer and a `teardown` entry, and Stop unwound only the
+outermost, leaving the rest on the page after the panel was gone.
+
+**The send label is anchored.** `submit` and `send message` as substrings match
+`Submit feedback` anywhere on the page, and the first in document order wins, so
+the wrong control is clicked and reported as sent: the resume logs that it went
+and leaves the text in the composer with the session still stalled. The old exact
+label was brittle and could at least not do that. Where more than one control
+still answers to Send, the composer decides, by `SEND_SCOPE` ancestors. A decoy
+button sits in the mock page ahead of the real one, so every existing send
+assertion guards this.
+
+**The prompt's text is read once per button.** `scan()` runs from a
+MutationObserver on a page that mutates constantly, and a prompt the block list
+holds back or an unticked category skips is never added to `clicked`, so it sat
+there having its context walked from scratch on every mutation: five ancestors,
+four hundred text nodes each, a `closest()` per node. Caching changes no decision,
+the click path having always decided on the first scan that saw the button.
+
+**An error's phrase is printed, never what it quotes.** `reasonFrom()` cuts at
+the first brace. The reducer's message is `Unhandled match for value: {…the whole
+event…}`, and the event is the item, so the first four hundred characters of it
+are the tool's name and its arguments rather than anything about the failure.
+Truncating bounded how much of somebody's transcript reached the console; it did
+not stop it.
+
+**Every way out of `answerWithoutARow()` says why, once, in the panel.** A silent
+refusal is indistinguishable from the whole feature being dead, and a reason in a
+console is very nearly as silent: it is not the service worker console the
+extension's own errors go to, and nobody outside this repo opens either. Twice
+now the fact needed to fix a stall has been sitting in a console while the panel
+said something unactionable, so the reason goes in the log, once per reason, with
+a `title` on the row since the line ellipsises at the panel's width.
+
+`storeReport()` goes to the console beside it and names what the route could
+reach rather than what it could not: whether there is a pill, a store, a
+snapshot, a `contextMap`, how many items are in it, the `toolResponse.state` of
+each, and the keys of the first item found. That last pair is what would catch
+the session's shape moving, `findPendingItem()` needing an `id` on the holder
+that carries the `toolResponse`, so an item nested one level deeper than expected
+reads as nothing pending at all. Keys and states only: a context map is somebody's
+transcript and a tool request is their data, and this gets pasted into chat
+windows.
+
+**403s on the page's own `PUT /ai-fde/api/threads/{id}`, and `Failed to save
+session`.** Seen alongside a session driven from outside, and not caused by this
+extension: the initiator is Foundry's own bundle. A thread updated out of turn
+leaves the open page holding a version it no longer has, and the save it then
+attempts does not carry every context item, so the server refuses it rather than
+letting an old save overwrite newer progress. `PROTOCOL.md` in `ai-fde-prompter`
+covers the same ground from the API side and notes that a stale `threadVersion`
+gives a 409; this is the neighbouring case. Known, not fixed, and a reload clears
+it. Do not read one of these as the panel having half-answered something: that
+condition has its own report, and is checked by reading the item back.
 
 **Foundry's own approval settings are not a substitute.** The session metadata
 carries `toolApprovalSettingsOverrides` and `bulkApprovalSettings`, with
@@ -319,6 +442,46 @@ anything that exact match has not already excluded, and `delete`, `force` and
 the prompt's text, which is where the risk is. `always` and `forever` stay out
 of that list: a prompt offering `Allow` beside `Always allow` carries the second
 label in its own text, and blocking on it would refuse the ordinary case.
+
+**Nothing about a prompt is read through a property that needs layout, and
+nothing is read off the button's parent.** Both were, and both were wrong on the
+real page in a way no fixture caught, because every fixture put the prompt in a
+`role="dialog"` with a bare `<button>` in it. A real approval is a transcript
+row: it is not a dialog, the sentence is a sibling of the buttons rather than
+their parent's text, and the buttons carry an `aria-label` describing the action
+rather than naming the control.
+
+- `promptContextFor()` fell back to `btn.parentElement`, which is the action row,
+  whose text is `Deny Allow`. So every prompt in a live session classified as
+  `Unclassified` and the block list never saw the word it exists to catch: a
+  prompt naming `production` was clicked. It now climbs to the first ancestor
+  carrying words that are not on a button, bounded by `PROMPT_LEVELS` because the
+  container above the row is the transcript and matching the block list against a
+  whole session would refuse on something somebody typed an hour ago.
+- `labelFor()` read `aria-label` ahead of `textContent`. `innerText` is empty for
+  a row the page has not laid out, which is the state a windowed transcript keeps
+  its off-screen rows in, so the aria-label answered, and `Allow this tool use
+  once` is not in `TARGET_LABELS`. The row went unmatched, the pill above it was
+  still up, and the panel reported `off-screen prompt still out of reach` with
+  the button sitting in the document. `aria-label` now goes last, where it only
+  answers for a button with no text of its own, which is what it is for.
+
+Both read `textContent` through `collapse()`, since `textContent` keeps the
+newlines a button written across three lines of JSX has between its words and
+`TARGET_LABELS` is an exact match.
+
+**The stall report names which of the two states it is.** `unmatchedAllows()`
+counts buttons whose `textContent` is exactly a target label and that have not
+been pressed. None of them is the page not having rendered the row, which nothing
+here can fix; one of them is a row in the document that is not being matched,
+which is a bug in this file. The two read identically in the panel, and the fact
+that separated them was only ever in the console, which is what left the bug
+above unfound. The panel now says `a prompt is on the page and was not matched`
+for the second.
+
+**A refusal is said out loud in both routes.** `answerWithoutARow()` always named
+the prompts it held back; the click path returned silently, so a blocked prompt
+looked exactly like the script having died. Once per button, via `refused`.
 
 **Every setting's default lives in the markup**, and the variable behind it is
 read from the checkbox at startup, so the two cannot drift. All three settings
@@ -383,6 +546,22 @@ reason.
 `[data-slate-string]`, which is what Slate renders its model into, and refuses
 when the text is not there. An empty send is not a no-op: the session answers it
 by running its previous turn again, which looks and logs like a delivered reply.
+
+**The send control is found after the text is in, and by pattern.** Both halves
+were wrong and produced `no send button on this page` against a composer that
+plainly has one. Looked up first, a composer with nothing in it need not render
+one at all; held across the two 300ms waits, the page re-renders the composer
+around the text and the reference is a detached node. And the lookup was a single
+exact `aria-label`, which is the same brittleness that stopped Allow buttons
+being matched. It is `aria-label` across every `button` and `[role="button"]`
+first, then visible text, the pattern `ai-fde-prompter` already uses against this
+page. The failure counts the controls it saw, so the next report says whether the
+page had none or the match missed.
+
+One consequence, deliberate: a send that fails now leaves the text in the
+composer, where before the early return meant nothing was ever inserted. That is
+the better of the two, the text being visible and the failure reported, but it
+does mean a refused request leaves something for the user to clear.
 
 **Requests from apps on this device.** The request arrives as
 `data-auto-fde-request` on the body and the outcome goes back as

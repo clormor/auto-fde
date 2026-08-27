@@ -109,10 +109,15 @@ DevTools console, and neither does anything this extension logs: that goes to
 the **service worker** console, reached by the link of that name on the same
 card.
 
-**A prompt sitting unanswered.** Look in the console, filtered to `Auto FDE`.
-A line reading `no-button answer declined: …` says exactly which check stopped
-it, and `the session would not take the answer` means the write was rejected. A
-prompt that stays put with nothing in the log is being refused by the block list
-or by an unticked category.
+**A prompt sitting unanswered.** The panel's log names the ordinary reasons:
+`refused a prompt naming delete` is the block list, and
+`off-screen prompt still out of reach` is the transcript not having rendered the
+row, which scrolling the session fixes. `a prompt is on the page and was not
+matched` is neither, and is a bug worth reporting with the version from the
+panel header. Beyond those, look in the console filtered to `Auto FDE`: a line
+reading `no-button answer declined: …` says which check stopped it, and
+`the session would not take the answer` means the write was rejected. A prompt
+that stays put with nothing in the log at all is being held by an unticked
+category.
 
 Anything beyond that is in [DEVELOPER.md](DEVELOPER.md).
