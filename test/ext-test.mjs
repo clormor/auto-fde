@@ -254,8 +254,6 @@ async function mockPage(browser, url, config = { origins: [ORIGIN], pathMarker: 
   const page = await browser.newPage();
   await page.route('**/*', route =>
     route.fulfill({ status: 200, contentType: 'text/html', body }));
-  // Two things are watched from outside the extension. Every AudioContext the
-  // keep-alive opens is recorded, so unticking the box can be checked for a leak.
   // Every listener the script puts on window is counted in and out, so Stop can
   // be checked for leaving any behind; the page's own listener is on document, so
   // it is not counted here.
@@ -268,15 +266,6 @@ async function mockPage(browser, url, config = { origins: [ORIGIN], pathMarker: 
     };
     window.addEventListener = (type, fn, opts) => { tally(type, 1); return add(type, fn, opts); };
     window.removeEventListener = (type, fn, opts) => { tally(type, -1); return remove(type, fn, opts); };
-
-    window.__ctxs = [];
-    const Real = window.AudioContext;
-    window.AudioContext = function (...args) {
-      const ctx = new Real(...args);
-      window.__ctxs.push(ctx);
-      return ctx;
-    };
-    window.AudioContext.prototype = Real.prototype;
   });
   await page.goto(url);
   if (config) await page.evaluate(c => { window.__autoFdeConfig = c; }, config);
@@ -332,10 +321,6 @@ check('pause is an icon button in the header', await p1.evaluate(() => {
 }));
 check('the active-state pill is gone', !(await has(p1, '#af-status')));
 
-check('keeping the tab awake is on by default',
-  await p1.evaluate(() => document.getElementById('af-host').shadowRoot
-    .querySelector('#af-keepalive').checked));
-
 check('resuming after a network error is on by default',
   await p1.evaluate(() => document.getElementById('af-host').shadowRoot
     .querySelector('#af-resume-toggle').checked));
@@ -344,11 +329,10 @@ check('the resume toggle says what it does',
   (await text(p1, 'label:has(#af-resume-toggle)'))
     .startsWith('Automatically resume'));
 
-check('the tab and network toggles share one Settings group', await p1.evaluate(() => {
+check('the network toggle sits in the Settings group', await p1.evaluate(() => {
   const root = document.getElementById('af-host').shadowRoot;
-  const sec = root.querySelector('#af-keepalive').closest('.sec');
-  return sec.querySelector('.cap').textContent.trim() === 'Settings'
-    && sec.contains(root.querySelector('#af-resume-toggle'));
+  const sec = root.querySelector('#af-resume-toggle').closest('.sec');
+  return sec.querySelector('.cap').textContent.trim() === 'Settings';
 }));
 
 check('the panel is translucent and blurs what is behind it', await p1.evaluate(() => {
@@ -358,39 +342,23 @@ check('the panel is translucent and blurs what is behind it', await p1.evaluate(
   return alpha > 0 && alpha < 1 && /blur/.test(blur);
 }));
 
-// The keep-alive is on by default, so the audio has to actually stop when it is
-// turned off. A suspended context is fine; a running one that nobody can reach
-// is a tab quietly playing audio for ever.
-// Headless reports userActivation.hasBeenActive as true from the start, so this
-// is the already-activated path. The waiting path is p14.
-check('the keep-alive opens an audio context on an activated page',
-  (await p1.evaluate(() => window.__ctxs.length)) >= 1);
+// The setting carries no status field: the panel assumes it works, and the hint
+// says what the setting does rather than what it is currently doing.
+check('the setting carries no status readout',
+  !(await has(p1, '#af-resume-status')));
+check('the resume hint ends after the sentence',
+  (await p1.evaluate(() => document.getElementById('af-host').shadowRoot
+    .querySelector('#af-resume-toggle').closest('.sec').querySelector('.hint').textContent.trim()))
+    === 'Tells the agent to carry on once the connection is back.');
 
-await p1.evaluate(() => document.getElementById('af-host').shadowRoot
-  .querySelector('#af-keepalive').click());
-await p1.waitForTimeout(500);
-
-check('unticking the keep-alive closes every audio context it opened',
-  await p1.evaluate(() => window.__ctxs.every(c => c.state === 'closed')),
-  JSON.stringify(await p1.evaluate(() => window.__ctxs.map(c => c.state))));
-// Neither setting carries a status field: the panel assumes they work, and the
-// hint says what the setting does rather than what it is currently doing.
-check('the settings carry no status readout',
-  !(await has(p1, '#af-keepalive-status')) && !(await has(p1, '#af-resume-status')));
-check('the keep-alive hint ends after the sentence',
-  (await text(p1, '#af-keepalive')).length === 0
-    && (await p1.evaluate(() => document.getElementById('af-host').shadowRoot
-      .querySelector('#af-keepalive').closest('.sec').querySelector('.hint').textContent.trim()))
-      === 'Inaudible audio stops Chrome throttling this tab.');
-
-// Keeping the tab awake is not a decision about which prompts to allow, so it
-// must not sit in the same group as the prompt categories.
-check('keeping the tab awake is not grouped with the prompt categories',
+// Resuming after a network error is not a decision about which prompts to allow,
+// so it must not sit in the same group as the prompt categories.
+check('the resume toggle is not grouped with the prompt categories',
   await p1.evaluate(() => {
     const root = document.getElementById('af-host').shadowRoot;
     const cats = root.querySelector('#af-cats');
-    const keepAlive = root.querySelector('#af-keepalive');
-    return !cats.contains(keepAlive) && keepAlive.closest('.sec') !== cats.closest('.sec');
+    const resume = root.querySelector('#af-resume-toggle');
+    return !cats.contains(resume) && resume.closest('.sec') !== cats.closest('.sec');
   }));
 
 check('every section is captioned', await p1.evaluate(() => {
@@ -743,29 +711,6 @@ check('looking at the tab starts the attempts again rather than waiting',
   afterLook === deadPresses + 1, `presses=${afterLook}`);
 
 // ---------------------------------------------------------------------------
-// A ticked keep-alive box whose audio never started looks exactly like one that
-// worked, and the tab is throttled either way. Chrome will not start audio
-// without a gesture on the page, and a toolbar press is not one, so the state
-// has to be said somewhere the user is already looking.
-// ---------------------------------------------------------------------------
-const p10 = await mockPage(browser, SESSION_URL);
-await p10.evaluate(() => {
-  // Stands in for Chrome's autoplay policy, which headless does not apply the
-  // same way: a context that stays suspended however often resume() is called.
-  window.AudioContext = class {
-    constructor() { this.state = 'suspended'; this.destination = {}; }
-    createOscillator() { return { frequency: {}, connect: t => t, start() {}, stop() {} }; }
-    createGain() { return { gain: {}, connect: t => t }; }
-    resume() { return Promise.resolve(); }
-    close() { this.state = 'closed'; }
-  };
-});
-await p10.evaluate(SCRIPT);
-await p10.waitForTimeout(600);
-check('a keep-alive that could not start says so in the log',
-  (await text(p10, '#af-log')).includes('click the page once to keep the tab awake'));
-
-// ---------------------------------------------------------------------------
 // Chrome draws no frames for a hidden tab, and the pending approval was never in
 // the document while the tab was in the background. Nothing here can make Chrome
 // draw it. What it can do is stop the page standing down of its own accord, so
@@ -834,7 +779,7 @@ check('neither behaviour is behind a checkbox',
   await p12.evaluate(() => {
     const root = document.getElementById('af-host').shadowRoot;
     return !root.querySelector('#af-state') && !root.querySelector('#af-visible')
-      && root.querySelectorAll('#af-keepalive, #af-resume-toggle').length === 2;
+      && root.querySelectorAll('#af-resume-toggle').length === 1;
   }));
 const stateEvents = await p12.evaluate(() => window.__events);
 check('a prompt with no button is answered in the session state',
@@ -861,30 +806,6 @@ check('a prompt the block list refuses is refused here too',
   (await p13.evaluate(() => window.__events)).length === 0
     && (await text(p13, '#af-log')).includes('refused delete_dataset'),
   await text(p13, '#af-log'));
-
-// ---------------------------------------------------------------------------
-// An AudioContext built before the page has been activated cannot start, and
-// Chrome writes its own warning into the page's console saying so. So nothing is
-// built until there has been a gesture, and the panel says it is waiting.
-// ---------------------------------------------------------------------------
-const p14 = await mockPage(browser, SESSION_URL);
-await p14.evaluate(() => {
-  Object.defineProperty(navigator, 'userActivation', {
-    get: () => ({ hasBeenActive: false, isActive: false }),
-    configurable: true,
-  });
-});
-await p14.evaluate(SCRIPT);
-await p14.waitForTimeout(300);
-check('no audio context is built before the page has been activated',
-  (await p14.evaluate(() => window.__ctxs.length)) === 0);
-check('and the panel says what it is waiting for',
-  (await text(p14, '#af-log')).includes('click the page once to keep the tab awake'));
-
-await p14.evaluate(() => window.dispatchEvent(new Event('pointerdown')));
-await p14.waitForTimeout(300);
-check('the first gesture is what builds it',
-  (await p14.evaluate(() => window.__ctxs.length)) === 1);
 
 await browser.close();
 

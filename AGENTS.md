@@ -106,27 +106,28 @@ and no `dist/`.
   row, so do not describe it as what makes a background tab work. Let the
   coming-back event through, keep `realVisibility()` reading the truth off the
   prototype, and undo the properties on Stop.
-- **Build no AudioContext before the page is activated.** One created without a
-  gesture cannot start and makes Chrome log its own warning into the page's
-  console. Check `navigator.userActivation.hasBeenActive`, otherwise wait for the
-  first `pointerdown` or `keydown`.
+- **Do not bring back the silent-audio keep-alive.** An inaudible oscillator was
+  meant to mark the tab audible and exempt it from Chrome's intensive throttling.
+  Chrome will not start audio without a gesture on the page and a toolbar press is
+  not one, so the box sat ticked while nothing played, and the throttling it was
+  supposed to prevent went on regardless. What actually answers a prompt in a
+  background tab is `answerWithoutARow()`, which needs no timer to be unthrottled.
 - **Neither of those two is a setting.** Answering a prompt with no button is the
   job, and telling the page it is in front is not a preference. A checkbox earns
-  its place only where the answer could reasonably be no, which is why the
-  keep-alive and auto-resume have one and these do not.
+  its place only where the answer could reasonably be no, which is why
+  auto-resume has one and these do not.
 - **The panel lives in a shadow root** (`#af-host`), in the system font, grouped
   into captioned sections by what each control decides. Do not move controls
-  between those groups: keeping the tab awake is not a decision about which
-  prompts to allow. `document.querySelector` cannot see into it, so tests reach
-  it through `document.getElementById('af-host').shadowRoot`.
+  between those groups: resuming after a network error is not a decision about
+  which prompts to allow. `document.querySelector` cannot see into it, so tests
+  reach it through `document.getElementById('af-host').shadowRoot`.
 - **The mark lives in one place**, the inline SVG in `auto-fde.js`. The toolbar
   PNGs are generated from it with `npm run icons`; never hand-edit them, and
   re-run it after changing the mark.
 - **Settings hints say what a setting does, not what it is doing.** There are no
   status readouts in the panel; state goes to the console. A genuine failure
-  goes in the activity log: a resume that could not be sent, a prompt that
-  cannot be reached, or a keep-alive still waiting for the click on the page
-  that Chrome requires before it will start audio.
+  goes in the activity log: a resume that could not be sent, or a prompt that
+  cannot be reached.
 - **Pause and stop live in the header**, as icons, so they work while the panel
   is collapsed. Do not move them into a footer. The glyph shows the action, the
   colour shows the current state.

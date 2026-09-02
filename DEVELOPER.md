@@ -130,9 +130,9 @@ back into their stylesheet either. The consequence for tests is that
 `document.getElementById('af-host').shadowRoot`, as `ext-test.mjs` does.
 
 Controls are grouped by what they decide, one captioned section each: which
-prompts to allow, settings, and recent activity. Keeping the tab awake is not a
-decision about which prompts to allow, so a test enforces that it stays out of
-that group.
+prompts to allow, settings, and recent activity. Resuming after a network error
+is not a decision about which prompts to allow, so a test enforces that it stays
+out of that group.
 
 The header carries the mark as inline SVG, the running count, and the pause and
 stop controls. Those are in the header rather than a footer so they still work
@@ -331,8 +331,8 @@ the prompt's text, which is where the risk is. `always` and `forever` stay out
 of that list: a prompt offering `Allow` beside `Always allow` carries the second
 label in its own text, and blocking on it would refuse the ordinary case.
 
-**Auto-resume is ticked by default, for the same reason the keep-alive is.**
-The tab is in the background and nobody is watching it, so an agent sitting
+**Auto-resume is ticked by default.** The tab is in the background and nobody is
+watching it, so an agent sitting
 behind an error banner until somebody looks at the tab is the failure the whole
 thing is here to prevent. The checkbox in the markup carries that default and
 `autoResumeEnabled` is read from it at startup, so the two cannot drift.
@@ -351,34 +351,11 @@ and would outlive it, so every listener registered outside the host element goes
 through `on()`, which records how to remove it. A browser test asserts nothing
 is left on `window` after Stop.
 
-The keep-alive checkbox is the other half of this. Silent audio marks the tab as
-audible, which exempts the whole page from Chrome's intensive throttling, so
-Foundry's own rendering and network activity keep up in the background. It is
-ticked by default, because running unattended in a background tab is the usual
-reason to reach for this at all.
-
-That default needs care. An `AudioContext` created without a user gesture cannot
-start, and Chrome writes its own warning into the page's console saying so, which
-is somebody else's console to be littering. So nothing is built until the page has
-been activated: `navigator.userActivation.hasBeenActive` says whether that has
-already happened, and if it has not, a one-shot `pointerdown`/`keydown` listener
-builds the context on the first click or keypress. `settleKeepAlive()` still calls
-`resume()` and re-arms if the context comes back suspended anyway.
-
-Headless Chromium reports `hasBeenActive` as true from the start, so the suite
-covers the waiting path by stubbing `navigator.userActivation`.
-
-Neither setting carries a status field in the panel: each hint says what the
-setting does, not what it is currently doing. `reportKeepAlive()` and
-`reportResume()` log the state to the console instead. Failures are the
-exception, and they go in the activity log, because a silent failure is the one
-thing that cannot be assumed away: a resume that could not be sent, a prompt
-that cannot be reached, and the keep-alive waiting for its gesture. That last
-one earns its line because a ticked box with a suspended context looks exactly
-like one that worked while the tab is being throttled anyway, and one click on
-the page fixes it. A browser test covers it with a stub context that stays
-suspended, since headless Chromium does not apply the autoplay policy the same
-way.
+The setting carries no status field in the panel: the hint says what the setting
+does, not what it is currently doing, and `reportResume()` logs the state to the
+console instead. Failures are the exception, and they go in the activity log,
+because a silent failure is the one thing that cannot be assumed away: a resume
+that could not be sent, or a prompt that cannot be reached.
 
 **Failures go in the tooltip.** Anything the service worker logs lands in the
 service worker console, which is a different console from the page's and which
@@ -498,8 +475,8 @@ Kept because each one is a trap that is easy to reintroduce.
   There is no API for opening DevTools on a service worker. Removed rather than
   left as a dead control. To reach that console: `chrome://extensions`, then the
   **service worker** link on this extension's card.
-- **The panel was styled like a debug overlay.** Monospace at 12px, the
-  keep-alive checkbox grouped in with the prompt categories as though it were
+- **The panel was styled like a debug overlay.** Monospace at 12px, the settings
+  checkboxes grouped in with the prompt categories as though they were
   another kind of prompt, no way to get it out of the way, and no mark on it. It
   is now a shadow-root panel in the system font, sectioned by what each control
   decides, collapsible, and headed by the mark.
@@ -518,3 +495,13 @@ Kept because each one is a trap that is easy to reintroduce.
   a `max-height` of the viewport, and log lines are written as text nodes rather
   than `innerHTML`, so a button label containing angle brackets cannot write
   markup into the panel.
+- **The keep-alive box was ticked while nothing played.** Silent audio was meant
+  to mark the tab audible and exempt the page from Chrome's intensive throttling.
+  Chrome will not start an `AudioContext` without a gesture on the page, and the
+  toolbar press that injects the script is not one, so on a page nobody had
+  touched the setting reported itself as on and the tab was throttled anyway.
+  Working around it cost a gesture listener, a suspended-context retry, and a log
+  line asking the user to click the page, for a setting that could not be relied
+  on when it mattered. Removed. What answers a prompt in a background tab is
+  `answerWithoutARow()`, which writes into the session's own state and needs no
+  timer to be unthrottled.
