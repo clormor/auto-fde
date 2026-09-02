@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             92 assertions
+npm run test:browser                             78 assertions
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -95,8 +95,8 @@ and no `dist/`.
 - **The block list reads the tool's name, never its arguments.** Arguments are
   content: `update_notepad_dsl` carries a whole notepad, so one mention of
   production refused every notepad write in the session.
-- **Every refusal says why, once.** Silence makes a refused prompt look identical
-  to the whole feature being dead.
+- **Every refusal says why, once.** Silence made a refused prompt look identical to
+  the whole feature being dead, twice.
 - **Foundry's own approval settings are not a substitute.** They do not cover every
   tool and do not reliably hold. Issue #5.
 - **The visibility spoof answers the page, not the browser.** `document.hidden`
@@ -112,22 +112,8 @@ and no `dist/`.
   first `pointerdown` or `keydown`.
 - **Neither of those two is a setting.** Answering a prompt with no button is the
   job, and telling the page it is in front is not a preference. A checkbox earns
-  its place only where the answer could reasonably be no, which is why the three
-  settings in the panel have one and these do not.
-- **Every category ships ticked.** They narrow nothing out of the box; what holds
-  a prompt back is the block list. Do not reintroduce an unticked category as a
-  safety control.
-- **Nothing goes into the chat that Slate did not take.** The composer is a Slate
-  editor, and a synthetic paste, `beforeinput` and `execCommand` all leave its
-  model empty while two of them paint the text on screen. Insert through the
-  editor object reached from the editable element's React fiber, then read back
-  `[data-slate-string]` before pressing send. An empty send is not a no-op: the
-  session answers it by rerunning its previous turn.
-- **A request from an app on this device arrives as a body attribute.**
-  `data-auto-fde-request` in, `data-auto-fde-result` out, read by a
-  `MutationObserver` rather than a timer, since the tab will be in the
-  background. Answer every request, refusals included, or the caller hangs.
-  Remember handled ids: the attribute stays on the body once answered.
+  its place only where the answer could reasonably be no, which is why the
+  keep-alive and auto-resume have one and these do not.
 - **The panel lives in a shadow root** (`#af-host`), in the system font, grouped
   into captioned sections by what each control decides. Do not move controls
   between those groups: keeping the tab awake is not a decision about which

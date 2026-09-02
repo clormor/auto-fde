@@ -1,7 +1,7 @@
 # Auto FDE
 
 A Chrome extension that clicks the `Allow` prompts in a Palantir Foundry AI FDE
-session for you.
+session for you. One button, no DevTools, no pasting.
 
 It answers a class of consent prompts in advance, which is a choice rather than
 a convenience. Before leaving it running, read
@@ -42,13 +42,13 @@ panel appears in the bottom right. One of your base URLs is not enough on its
 own: the rest of the Foundry workspace, a Pipeline Builder page for instance, is
 on the same host but is not a session, so the button stays grey there.
 
-The panel has checkboxes for which kinds of prompt to click, the version it is
-running, a counter, and the last ten things it did. Drag it by the title bar to move it; position and
+The panel has checkboxes for which kinds of prompt to click, a counter, and the
+last ten prompts it clicked. Drag it by the title bar to move it; position and
 collapsed state are remembered. Pause and stop are icons in the title bar, so
 they still work when the panel is collapsed down to a single bar with the
 chevron. Paused shows an amber play icon, running shows a green pause icon.
 
-Three settings sit below the categories:
+Two settings sit below the categories:
 
 - **Keep the tab awake**, on by default. Inaudible audio marks the tab as
   audible, which stops Chrome throttling its timers and stops a long session
@@ -57,15 +57,8 @@ Three settings sit below the categories:
 - **Automatically resume after a network error**, on by default, since a dropped
   connection is what actually ends an unattended session. Once the connection has
   been back for a couple of seconds it types one line into the chat telling the
-  agent to carry on, and sends it. Every send is in the log, and the log says
-  whether the text went with it or whether the session was only nudged, since an
-  empty send resumes it either way. Untick it if you would rather nothing was
-  said on your behalf.
-- **Accept messages from apps on this device**, on by default. An app running
-  on your own machine can put a reply into this session, which is how you answer
-  an agent from your phone without being at the browser. Every message it sends
-  is in the log. Untick it and requests are refused rather than ignored, so
-  whatever asked is told no instead of waiting.
+  agent to carry on, and sends it. Every send is in the log. Untick it if you
+  would rather nothing was said on your behalf.
 
 If a prompt arrives while you are scrolled up the transcript, the panel scrolls
 you to the bottom to reach it, because Foundry only keeps the part of a long
@@ -76,22 +69,25 @@ again to start it back up.
 
 ## Working in another tab
 
+It just works, and this is the part worth understanding.
+
 Chrome stops drawing a tab you are not looking at, and Foundry will not add a row
 to a page it is not drawing, so a prompt that arrives while you are elsewhere has
 no button anywhere on the page. Nothing that clicks buttons can answer it.
 
 So the panel does not click one. The pending approval is in the session's own
-state the whole time, and that is where the answer is written, exactly as
-pressing Allow writes it. That works in a background tab, behind another window,
-on another desktop. The log shows those with `no row` after the category.
+state the whole time, and that is where the answer is written, exactly as pressing
+Allow writes it, followed by the same start of the agent loop the button triggers.
+That works in a background tab, behind another window, on another desktop. The log
+shows those with `no row` after the category.
 
 Two things still apply. The block list is checked against the tool's name, so
-anything mentioning deleting, forcing or production is refused and says so in
-the log. And an answer the session does not accept is reported rather than
-retried, because a half-answered prompt is worse than a waiting one.
+anything mentioning deleting, forcing or production is refused and says so in the
+log. And an answer the session does not accept is reported rather than retried,
+because a half-answered prompt is worse than a waiting one.
 
-Click once in the tab after you open the panel: that is what lets the keep-alive
-start. The log says so if it has not.
+Clicking once in the tab after you open the panel is still worth doing, since
+that is what lets the keep-alive start. The log says so if it has not.
 
 ## If nothing happens
 
@@ -109,15 +105,10 @@ DevTools console, and neither does anything this extension logs: that goes to
 the **service worker** console, reached by the link of that name on the same
 card.
 
-**A prompt sitting unanswered.** The panel's log names the ordinary reasons:
-`refused a prompt naming delete` is the block list, and
-`off-screen prompt still out of reach` is the transcript not having rendered the
-row, which scrolling the session fixes. `a prompt is on the page and was not
-matched` is neither, and is a bug worth reporting with the version from the
-panel header. Beyond those, look in the console filtered to `Auto FDE`: a line
-reading `no-button answer declined: …` says which check stopped it, and
-`the session would not take the answer` means the write was rejected. A prompt
-that stays put with nothing in the log at all is being held by an unticked
-category.
+**A prompt sitting unanswered.** Look in the console, filtered to `Auto FDE`.
+A line reading `no-button answer declined: …` says exactly which check stopped
+it, and `the session would not take the answer` means the write was rejected. A
+prompt that stays put with nothing in the log is being refused by the block list
+or by an unticked category.
 
 Anything beyond that is in [DEVELOPER.md](DEVELOPER.md).
