@@ -40,110 +40,30 @@
   const CATEGORIES = [
     { id: 'read',   label: 'Read-only actions',      enabled: true,  risk: 1, match: t => /read|view|preview|list/i.test(t) },
     { id: 'write',  label: 'Write / edit actions',    enabled: true,  risk: 2, match: t => /write|edit|update|create/i.test(t) },
-    { id: 'deploy', label: 'Deploy / build actions',  enabled: true,  risk: 3, match: t => /deploy|build|publish|run/i.test(t) },
+    { id: 'deploy', label: 'Deploy / build actions',  enabled: false, risk: 3, match: t => /deploy|build|publish|run/i.test(t) },
     { id: 'other',  label: 'Unclassified',            enabled: true,  risk: 0, match: () => true },
   ];
   const BY_RISK = [...CATEGORIES].sort((a, b) => b.risk - a.risk);
 
-  // Runs of whitespace, which textContent keeps and innerText does not. A button
-  // written across three lines of JSX has newlines between its words, and
-  // TARGET_LABELS is an exact match, so the fallback below is unusable without
-  // this.
-  function collapse(text) {
-    return (text || '').replace(/\s+/g, ' ').trim();
-  }
-
   // innerText is what a person reads off the button, which is what TARGET_LABELS
   // is written against, so it comes first. It is empty for a subtree the page is
-  // not laying out, and textContent needs none, so textContent is the fallback: a
-  // button in the document whose text is exactly one of the labels is one to
-  // press whether or not the page is drawing it.
-  //
-  // aria-label goes last, and the order is the whole point. Foundry's approval
-  // buttons carry one, and it describes the action rather than naming the
-  // control: `Allow this tool use once` is not in TARGET_LABELS. Ahead of
-  // textContent it answered for every button the page had not laid out, so a row
-  // sitting in the document went unmatched and was reported as out of reach.
-  // Behind it, it only answers for a button with no text of its own, which is
-  // what it is for.
+  // not rendering, and textContent needs no rendering at all, so it is the
+  // fallback: a button in the document whose text is exactly one of the labels is
+  // one to press whether or not the page is drawing it. This is not the fix for a
+  // prompt in a hidden tab, where there is no button in the document to read.
   function labelFor(btn) {
-    return collapse(btn.innerText) || collapse(btn.textContent)
-      || collapse(btn.getAttribute('aria-label'));
+    return (btn.innerText || btn.getAttribute('aria-label') || btn.textContent || '').trim();
   }
 
-  // What is being asked for, which is what the block list and the categories are
-  // matched against. How far up to look for it, and how much of a container has
-  // to be words before it counts as the prompt rather than the row of controls
-  // the button sits in.
-  const PROMPT_LEVELS = 5;
-  const PROMPT_LIMIT = 400;
-  const PROMPT_MIN_CHARS = 12;
-  // A ceiling on the walk, not on the answer. The text budget alone does not
-  // bound it: a container holding nothing but controls contributes no characters
-  // and is walked to the end, and five levels above a transcript row is the
-  // transcript. This runs inside the MutationObserver callback on a page that
-  // mutates constantly, so it needs a stop that does not depend on what it finds.
-  const PROMPT_NODES = 400;
-
-  // The words in a container that are not on its buttons. `Allow` and `Deny` are
-  // controls, so a container holding nothing else is the action row and not the
-  // prompt, and this is what says so. textContent throughout, because a windowed
-  // transcript keeps its off-screen rows in the document and does not lay them
-  // out, and innerText is empty for every one of them.
-  function promptTextOf(el) {
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-    const parts = [];
-    let size = 0, seen = 0;
-    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-      if (size >= PROMPT_LIMIT || ++seen > PROMPT_NODES) break;
-      if (node.parentElement && node.parentElement.closest('button, [role="button"]')) continue;
-      parts.push(node.nodeValue);
-      size += (node.nodeValue || '').length;
-    }
-    return collapse(parts.join(' ')).slice(0, PROMPT_LIMIT).toLowerCase();
-  }
-
-  // An approval on this page is a transcript row, not a dialog, so the dialog
-  // selector matches nothing and the fallback used to be the button's own parent,
-  // which is the action row and whose text is `Allow Deny`. Every prompt
-  // therefore classified as Unclassified and the block list never saw a word of
-  // what was being asked for. So the search climbs to the first ancestor that carries
-  // words of its own, which is the innermost thing holding the sentence. Bounded,
-  // because the container above the row is the transcript, and matching the block
-  // list against a whole session would refuse on a word somebody typed an hour
-  // ago.
-  // Read once per button. scan() runs from a MutationObserver on a page that
-  // mutates constantly, and a prompt the block list holds back or an unticked
-  // category skips is never added to `clicked`, so it sits there having its
-  // context walked from scratch on every mutation: five ancestors, four hundred
-  // text nodes each, and a closest() per node. Caching changes no decision, the
-  // click path having always decided on the first scan that saw the button.
-  const contextCache = new WeakMap();
   function promptContextFor(btn) {
-    if (contextCache.has(btn)) return contextCache.get(btn);
-    const context = readPromptContext(btn);
-    contextCache.set(btn, context);
-    return context;
-  }
-
-  function readPromptContext(btn) {
-    const dialog = btn.closest('[role="dialog"], [role="alertdialog"], .dialog, .modal');
-    if (dialog) return promptTextOf(dialog);
-    let el = btn.parentElement;
-    for (let level = 0; el && level < PROMPT_LEVELS; level++, el = el.parentElement) {
-      const text = promptTextOf(el);
-      if (text.length >= PROMPT_MIN_CHARS) return text;
-    }
-    return '';
+    const container = btn.closest('[role="dialog"], [role="alertdialog"], .dialog, .modal') || btn.parentElement;
+    return (container?.innerText || '').slice(0, 400).toLowerCase();
   }
   function categoryFor(context) {
     return BY_RISK.find(c => c.match(context));
   }
 
   const clicked = new WeakSet();
-  // Prompts the block list has held back, so each is said once rather than on
-  // every mutation for as long as the row is up.
-  const refused = new WeakSet();
   let active = true, count = 0;
 
   // Stop can be followed by another press of the toolbar button on the same
@@ -305,11 +225,8 @@
   // ---------- Network-error auto-resume ----------
   // Set from the checkbox, which carries the default so the two cannot drift.
   let autoResumeEnabled = false;
-  let bridgeEnabled = false;
   let recovering = false;
-  // Stop has to reach a send that is between its two waits, so the waits check
-  // this rather than a timer handle being cleared.
-  let stopped = false;
+  let resumeTimer = null;
   const handledBanners = new WeakSet();
   // What gets typed into the chat and sent once the connection is back. It is a
   // fresh instruction, not a replay: the agent knows what it was doing, so it
@@ -326,40 +243,7 @@
       .find(el => NETWORK_PATTERNS.some(re => re.test(el.textContent || '')));
   }
 
-  // The send control. One exact aria-label was the whole of this, which is the
-  // same brittleness that stopped Allow buttons being matched: a label is
-  // Foundry's to rename and this had no second way to find it. aria-label across
-  // every button first, since that is what the control actually carries, then the
-  // visible text, which catches one whose label has been renamed but still reads
-  // Send.
-  // Anchored, not a substring. `submit` and `send message` loose would match
-  // `Submit feedback` anywhere on the page, and the first in document order wins,
-  // so a mis-target is clicked and reported as sent: the resume would log that it
-  // went and leave the text sitting in the composer with the session still
-  // stalled. The old exact label was brittle and could at least not do that.
-  const SEND_LABEL = /^(send|send message|submit)$/i;
-  // How far up from the composer to look for the control that belongs to it.
-  const SEND_SCOPE = 6;
-
-  function sharesScopeWith(composer, btn) {
-    let el = composer;
-    for (let level = 0; el && level < SEND_SCOPE; level++, el = el.parentElement) {
-      if (el.contains(btn)) return true;
-    }
-    return false;
-  }
-
-  function findSendButton() {
-    const matches = Array.from(document.querySelectorAll('button, [role="button"]'))
-      .filter(btn => SEND_LABEL.test(collapse(btn.getAttribute('aria-label')))
-        || SEND_LABEL.test(collapse(btn.innerText) || collapse(btn.textContent)));
-    if (matches.length < 2) return matches[0] || null;
-    // More than one control on the page answers to Send, so the composer says
-    // which of them is this chat's.
-    const composer = findRichInput() || findFallbackTextarea();
-    if (!composer) return matches[0];
-    return matches.find(btn => sharesScopeWith(composer, btn)) || matches[0];
-  }
+  function findSendButton() { return document.querySelector('button[aria-label="Send message"]'); }
   function findFallbackTextarea() {
     return Array.from(document.querySelectorAll('textarea'))
       .find(t => /rich prompt editor is unavailable/i.test(t.placeholder || ''));
@@ -388,133 +272,31 @@
     el.dispatchEvent(pasteEvent);
   }
 
-  // The rich input is a Slate editor and keeps its own model, which no DOM
-  // technique updates: a synthetic paste, an InputEvent('beforeinput') and
-  // document.execCommand('insertText') all leave the model empty, and the last
-  // two paint the text on screen regardless, so the composer looks filled while
-  // the send button sends nothing. The text goes through the editor object
-  // instead, reached from the editable element's React fiber.
-  const EDITOR_LEVELS = 60;
+  function sendResumeMessage() {
+    const sendBtn = findSendButton();
+    if (!sendBtn) { console.warn('[Auto FDE] Could not locate send button.'); return false; }
 
-  function looksLikeEditor(value) {
-    return !!value && typeof value === 'object' && Array.isArray(value.children)
-      && typeof value.insertText === 'function' && typeof value.apply === 'function';
-  }
-
-  function slateEditorFrom(el) {
-    const key = Object.keys(el).find(k =>
-      k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
-    if (!key) return null;
-    let fiber = el[key];
-    for (let i = 0; i < EDITOR_LEVELS && fiber; i++, fiber = fiber.return) {
-      const props = fiber.memoizedProps;
-      if (props && looksLikeEditor(props.editor)) return props.editor;
-      if (looksLikeEditor(fiber.memoizedState && fiber.memoizedState.editor)) {
-        return fiber.memoizedState.editor;
-      }
-    }
-    return null;
-  }
-
-  // Slate refuses an edit with no selection, and an editor nobody has clicked in
-  // has none. The end of the document is where typing would have gone.
-  function endPointOf(editor) {
-    const path = [];
-    let node = editor;
-    while (node && Array.isArray(node.children) && node.children.length) {
-      const last = node.children.length - 1;
-      path.push(last);
-      node = node.children[last];
-    }
-    return { path, offset: typeof node?.text === 'string' ? node.text.length : 0 };
-  }
-
-  function insertThroughEditor(el, text) {
-    const editor = slateEditorFrom(el);
-    if (!editor) return false;
-    try {
-      if (!editor.selection) {
-        const point = endPointOf(editor);
-        editor.apply({
-          type: 'set_selection',
-          properties: null,
-          newProperties: { anchor: point, focus: point }
-        });
-      }
-      editor.insertText(text);
-      return true;
-    } catch (err) {
-      console.warn('[Auto FDE] The editor refused the text:', err);
-      return false;
-    }
-  }
-
-  // What the send button will read, rather than what the DOM happens to show:
-  // Slate renders the model into these, and renders its placeholder instead when
-  // the model is empty.
-  function richInputHolds(el, text) {
-    const rendered = Array.from(el.querySelectorAll('[data-slate-string="true"]'))
-      .map(n => n.textContent).join('');
-    return rendered.includes(text.slice(0, 40));
-  }
-
-  // Puts text in the chat and sends it, for both the network-error resume and
-  // the requests handled below. requireText decides what happens when the text
-  // will not go in: a request needs its words, so it fails; the resume only needs
-  // the session moving, which an empty send does, so it reports which it did.
-  async function composeAndSend(text, { requireText }) {
     const textarea = findFallbackTextarea();
-    let carriedText = false;
-
     if (textarea) {
-      if (!setTextareaValue(textarea, text)) {
-        return { ok: false, error: 'the chat textarea has no value setter to call' };
+      if (!setTextareaValue(textarea, RESUME_TEXT)) {
+        console.warn('[Auto FDE] The chat textarea has no value setter to call.');
+        return false;
       }
-      carriedText = true;
     } else {
       const rich = findRichInput();
-      if (!rich) return { ok: false, error: 'no chat input on this page' };
-      // The editor route first: it is the only one that changes Slate's model.
-      // The paste stays behind it because it costs one event, and an editor that
-      // accepts it needs no code change here.
-      if (!insertThroughEditor(rich, text)) pasteIntoRichInput(rich, text);
-      await new Promise(r => setTimeout(r, 300));
-      if (stopped) return { ok: false, error: 'stopped' };
-      carriedText = richInputHolds(rich, text);
-      if (!carriedText && requireText) {
-        return { ok: false, error: 'the editor would not take the text' };
-      }
+      if (!rich) { console.warn('[Auto FDE] Could not locate any chat input.'); return false; }
+      pasteIntoRichInput(rich, RESUME_TEXT);
     }
-
     // The editor needs a turn to take the text before the button will send it.
     // This is the one deferred action in the script, and it is not the prompt
     // click: a resume that lands late in a throttled tab still resumes, whereas
     // a prompt click that lands late is a session left sitting unanswered.
-    await new Promise(r => setTimeout(r, 300));
-    if (stopped) return { ok: false, error: 'stopped' };
-
-    // Looked for after the text is in, not before. A composer with nothing in it
-    // need not render the control at all, and looking first reported no send
-    // button on a page that grows one the moment it has something to send. It is
-    // also found fresh rather than held across the two waits, since the page
-    // re-renders the composer around the text and a reference taken before that
-    // is a detached node.
-    const sendBtn = findSendButton();
-    if (!sendBtn) {
-      const seen = document.querySelectorAll('button, [role="button"]').length;
-      return { ok: false, error: `no send button on this page (${seen} controls seen)` };
-    }
-    sendBtn.click();
-    return { ok: true, carriedText };
-  }
-
-  async function sendResumeMessage() {
-    const result = await composeAndSend(RESUME_TEXT, { requireText: false });
-    if (!result.ok) {
-      if (!stopped) reportResume('could not send the resume message', true);
-      return false;
-    }
-    recordResume(result.carriedText);
+    resumeTimer = setTimeout(() => {
+      resumeTimer = null;
+      if (!sendBtn.isConnected) { reportResume('could not send the resume message', true); return; }
+      sendBtn.click();
+      recordResume();
+    }, 300);
     return true;
   }
 
@@ -546,8 +328,9 @@
     const stable = await waitForStableConnection();
     if (!recovering) { reportResume(autoResumeEnabled ? 'watching' : 'off'); return; }
     if (stable) {
-      const ok = await sendResumeMessage();
+      const ok = sendResumeMessage();
       if (ok) reportResume('watching');
+      else reportResume('could not send the resume message', true);
     }
     recovering = false;
   }
@@ -564,11 +347,6 @@
   // with its toolResponse set, then changeRequestStatus. So this sets the same
   // response on the same item and starts the loop, which is what issues the
   // status change itself.
-  // Read off the wire, and the store's reducer does not answer to it: it throws
-  // `Unhandled match for value` naming the whole event, the same exhaustive-match
-  // error store.dispatch gives. A name the network uses is not necessarily a name
-  // the reducer has a case for, so this is a starting point and learnEvent()
-  // replaces it with the one a click is seen to send.
   const UPSERT_EVENT = 'upsertChildContextItem';
   // What a click was measured to write. Learning replaces it when a click is
   // seen, because a measured constant is a constant that can rot.
@@ -588,34 +366,13 @@
 
   let lastStateTryAt = 0;
   let learnedResponse = null;
-  let learnedEvent = null;
-  // Set across this script's own call into the reducer, so the watch above can
-  // tell the page's events from its own. __setState is synchronous, measured, so
-  // the flag cannot outlive the call; the finally is there in case that changes.
-  let writingOurOwn = false;
   let knownStore = null;
-  // Every agent already patched, not the last one. The console changes route
-  // without reloading, so a session can be left and come back to; a single slot
-  // held the agent from the session in between, and coming back wrapped the
-  // wrapper. Each round trip added a layer and a teardown entry, and Stop unwound
-  // only the outermost, leaving the rest on the page after the panel was gone.
-  const watchedAgents = new WeakSet();
   let awaitingGrant = null, grantRead = false;
   const refusedWithoutARow = new Set();
   const failedToAnswer = new Set();
 
   function shorten(text, limit) {
     return text.length > limit ? text.slice(0, limit) + '…' : text;
-  }
-
-  // The phrase an error leads with, and none of what it quotes. The reducer's
-  // message is `Unhandled match for value: {…the whole event…}`, and the event is
-  // the item, so the first four hundred characters of it are the tool's name and
-  // its arguments rather than anything about the failure. Truncating bounded how
-  // much of somebody's transcript went into a console whose contents get pasted
-  // into chat windows; it did not stop it.
-  function reasonFrom(err) {
-    return collapse(((err && err.message) || '').split(/[{[]/)[0]) || 'no reason given';
   }
 
   function fiberFor(el) {
@@ -649,66 +406,6 @@
       && !!value.agent && typeof value.agent.onEvent === 'function';
   }
 
-  // The name of the event a click puts into the store, taken from a click rather
-  // than assumed. UPSERT_EVENT is a wire name and the reducer has no case for it,
-  // which is the whole reason answering without a row has never worked on this
-  // build. The script presses real Allow buttons several times an hour whenever
-  // the transcript has rendered the row, and each one goes through here, so the
-  // right name arrives on its own and is used the next time there is no row.
-  //
-  // Passive: the real function is called with the same arguments and its result
-  // returned untouched, and Stop puts it back. Only the type is read. The event
-  // carries the item, which is somebody's transcript and their tool arguments.
-  function learnEvent(store) {
-    const agent = store.agent;
-    if (!agent || watchedAgents.has(agent)) return;
-    watchedAgents.add(agent);
-    const real = agent.onEvent;
-    const wrapper = function (state, event) {
-      // Never this script's own write. It would learn the name it just guessed,
-      // print a line saying an approval sends it, and be no better informed.
-      //
-      // And only while a click of this script's own is in flight. Carrying a
-      // contextItem with a toolResponse is not enough on its own: the tool's
-      // result comes back the same shape, under a different type, seconds later,
-      // and whichever arrived last became the name used for the next answer.
-      // awaitingGrant is set immediately before the click and cleared once the
-      // item is seen to change, which is exactly the window an approval is in.
-      if (!writingOurOwn && awaitingGrant && event && typeof event.type === 'string'
-          && event.contextItem && event.contextItem.toolResponse
-          && learnedEvent !== event.type) {
-        learnedEvent = event.type;
-        appendLog(new Date().toLocaleTimeString(), `learned that an approval sends ${event.type}`);
-        console.log(`[Auto FDE] an approval sends ${event.type}`);
-      }
-      return real.apply(this, arguments);
-    };
-
-    agent.onEvent = wrapper;
-    // Checked, because this file is not a module and the assignment is not in
-    // strict mode: a frozen object or an accessor with no setter takes it
-    // silently and leaves the original in place, which reads exactly like a page
-    // that never calls the property.
-    if (agent.onEvent !== wrapper) {
-      try {
-        Object.defineProperty(agent, 'onEvent',
-          { value: wrapper, writable: true, configurable: true });
-      } catch (err) {
-        console.warn(`[Auto FDE] the session's events cannot be watched: ${err.message}`);
-      }
-    }
-    if (agent.onEvent !== wrapper) {
-      watchedAgents.delete(agent);
-      console.warn('[Auto FDE] the session would not let its events be watched;'
-        + ' the name an approval sends cannot be learned.');
-      return;
-    }
-    teardown.push(() => {
-      agent.onEvent = real;
-      watchedAgents.delete(agent);
-    });
-  }
-
   function getStore(el) {
     if (knownStore) return knownStore;
     let fiber = fiberFor(el);
@@ -716,7 +413,6 @@
       const props = fiber.memoizedProps;
       if (props && typeof props === 'object' && looksLikeStore(props.value)) {
         knownStore = props.value;
-        learnEvent(knownStore);
         return knownStore;
       }
     }
@@ -786,58 +482,13 @@
   }
 
   // ---------- Writing the answer ----------
-  // What the state route could actually see, for when it declines. The reason
-  // names which check stopped it; this names what was there, which is the
-  // difference between the session's shape having moved and there being nothing
-  // to answer. Without it a decline says a store is unreachable and not what was
-  // reachable instead, and the next step is guesswork.
-  //
-  // Keys and response states only. A context map is somebody's transcript and a
-  // tool request is their data, and this goes into a console whose contents get
-  // pasted into chat windows.
-  const REPORT_KEYS = 12;
-  function storeReport() {
-    const marker = findPendingMarker();
-    if (!marker) return 'pill=none';
-    const store = getStore(marker);
-    if (!store) return 'pill=yes store=none';
-    const snapshot = snapshotOf(store);
-    if (!snapshot) return 'pill=yes store=yes snapshot=none';
-    const map = snapshot.contextMap;
-    if (!map || typeof map !== 'object') {
-      return 'pill=yes store=yes contextMap=none'
-        + ` snapshot=[${Object.keys(snapshot).slice(0, REPORT_KEYS).join(' ')}]`;
-    }
-    const states = [];
-    let shape = 'none';
-    for (const key of Object.keys(map)) {
-      const holder = findToolResponse(map[key], 0);
-      if (!holder) continue;
-      if (shape === 'none') shape = Object.keys(holder).slice(0, REPORT_KEYS).join(' ');
-      const state = holder.toolResponse && holder.toolResponse.state;
-      if (typeof state !== 'string') continue;
-      // Whether the holder carries an id is load-bearing: findPendingItem() needs
-      // one, so an item nested a level deeper than expected reads as nothing
-      // pending at all.
-      states.push(holder.id ? state : `${state} (no id)`);
-    }
-    return `pill=yes store=yes items=${Object.keys(map).length}`
-      + ` responses=[${states.slice(0, REPORT_KEYS).join(' | ') || 'none'}]`
-      + ` item=[${shape}]`;
-  }
-
   // Every way out of here used to be silent, which made a refusal look identical
-  // to the feature being dead. Each reason is said once, and it goes in the panel
-  // as well as the console: the console is a different console from the service
-  // worker's, nobody outside this repo opens either, and a reason nobody reads is
-  // the same as no reason. That is twice now that the fact needed to fix a stall
-  // was sitting in a console while the panel said something unactionable.
+  // to the feature being dead. Each reason is said once.
   const declined = new Set();
   function decline(reason) {
     if (!declined.has(reason)) {
       declined.add(reason);
-      appendLog(new Date().toLocaleTimeString(), reason);
-      console.warn(`[Auto FDE] no-button answer declined: ${reason}. ${storeReport()}`);
+      console.warn(`[Auto FDE] no-button answer declined: ${reason}`);
     }
     return false;
   }
@@ -855,63 +506,12 @@
   // store closed over, so the public property is a different door. What does work
   // is running the reducer and handing the store the result, as an updater.
   // agent.onEvent(state, event) is the exact call the page makes, observed.
-  const refusedEvents = new Set();
   function writeAnswer(store, event) {
     try {
-      writingOurOwn = true;
       store.__setState(current => store.agent.onEvent(current, event));
       return true;
     } catch (err) {
-      if (refusedEvents.has(event.type)) return false;
-      refusedEvents.add(event.type);
-      // Shortened, because the page's own message embeds the entire event it
-      // could not match, which is the item, which is the user's transcript and
-      // their tool arguments. One refusal put a whole Slack message body and a
-      // handful of RIDs into a console whose contents get pasted into chat
-      // windows.
-      console.warn(`[Auto FDE] the session refused ${event.type}: ${reasonFrom(err)}`);
-      return false;
-    } finally {
-      writingOurOwn = false;
-    }
-  }
-
-  // The route left when the reducer has no case for the event. It sets the
-  // response on the item and hands the store the state, which is the same single
-  // field the reducer would have set and nothing besides: no other item is
-  // touched and nothing on this one is rewritten. It is second, not preferred,
-  // because the reducer may do bookkeeping this cannot see, and it is not
-  // trusted either: the caller reads the item back and records a write that did
-  // not stick, and the log says which route answered.
-  function writeResponseDirectly(store, pending, response) {
-    // Only where the pending item is the map's own value. findToolResponse()
-    // searches ITEM_SEARCH_DEPTH levels down, so the holder it returns need not
-    // be map[id]: it can be something nested under it. Assigning to map[id] then
-    // has two ways to go wrong, and the second is the dangerous one. The id may
-    // not be a key at all, in which case nothing is written and this used to
-    // report that it had been. Or it is a key, and the write adds a second
-    // toolResponse at the top level while the real one underneath stays pending
-    // — and the read-back finds the outer one, matches, and starts the agent loop
-    // on a prompt nobody answered. That is the half-answered state, reached by
-    // the one route with no reducer to catch it.
-    const target = snapshotOf(store);
-    const holder = target && target.contextMap && target.contextMap[pending.id];
-    if (!holder || !holder.toolResponse) {
-      console.warn('[Auto FDE] the pending item is not the session\'s own map entry;'
-        + ' it will not be written to directly.');
-      return false;
-    }
-    try {
-      store.__setState(current => {
-        const map = current && current.contextMap;
-        if (!map || !map[pending.id] || !map[pending.id].toolResponse) return current;
-        const item = Object.assign({}, map[pending.id], { toolResponse: response });
-        return Object.assign({}, current,
-          { contextMap: Object.assign({}, map, { [pending.id]: item }) });
-      });
-      return true;
-    } catch (err) {
-      console.warn(`[Auto FDE] the session refused a direct write: ${reasonFrom(err)}`);
+      console.warn(`[Auto FDE] the session refused the answer: ${err.message}`);
       return false;
     }
   }
@@ -925,13 +525,7 @@
     if (!map) return decline('the store reports no context map');
     const pending = findPendingItem(map);
     if (!pending) return decline('nothing in the session is pending approval');
-
-    // Keyed on the event as well as the item, so an answer refused under the
-    // wire name is tried again once a click has taught this the reducer's name
-    // rather than being written off with the item.
-    const type = learnedEvent || UPSERT_EVENT;
-    const attempt = `${pending.id}:${type}`;
-    if (failedToAnswer.has(attempt)) return false;
+    if (failedToAnswer.has(pending.id)) return false;
 
     const context = stateContextFor(pending);
     if (BLOCKED_CONTEXT.some(word => context.includes(word))) {
@@ -948,19 +542,7 @@
     // Only the response changes. Everything else on the item belongs to the page,
     // and rewriting any of it would be rewriting somebody's transcript.
     const item = Object.assign({}, pending, { toolResponse: response });
-    let route = 'no row';
-    if (!writeAnswer(store, { type, contextItem: item })) {
-      // The reducer having no case for the event is not something that changes
-      // between two ticks, so the direct write is tried here rather than the
-      // whole thing being retried every second: one session's console held 1239
-      // identical refusals of the same write.
-      if (!writeResponseDirectly(store, pending, response)) {
-        failedToAnswer.add(attempt);
-        appendLog(new Date().toLocaleTimeString(), `the session refused a ${type} answer`);
-        return false;
-      }
-      route = 'no row, direct';
-    }
+    if (!writeAnswer(store, { type: UPSERT_EVENT, contextItem: item })) return false;
 
     // Verified rather than assumed. A half-answered prompt is worse than a
     // waiting one, so a write the store did not take is reported and left alone.
@@ -970,7 +552,7 @@
       // Recorded against the item, not just reported, so a write the session
       // ignores is attempted once rather than every second for as long as the
       // prompt is up.
-      failedToAnswer.add(attempt);
+      failedToAnswer.add(pending.id);
       appendLog(new Date().toLocaleTimeString(), 'the session would not take the answer');
       console.warn(`[Auto FDE] ${pending.toolName} was answered and the session did not take it.`);
       return false;
@@ -988,7 +570,7 @@
     } else {
       console.warn('[Auto FDE] no way to start the agent loop is in reach.');
     }
-    record(pending.toolName || 'prompt', `${cat.id} · ${route}`);
+    record(pending.toolName || 'prompt', `${cat.id} · no row`);
     return true;
   }
 
@@ -1068,8 +650,6 @@
       }
       .mark { width: 15px; height: 15px; flex: 0 0 auto; display: block; }
       .name { font-weight: 600; letter-spacing: .005em; }
-      /* Which revision is running, so a bug report can name one. */
-      .ver { color: #949cab; font-size: 11px; font-variant-numeric: tabular-nums; }
       .count {
         font-variant-numeric: tabular-nums;
         font-size: 11px; font-weight: 600;
@@ -1132,7 +712,6 @@
       <div class="hd" id="af-header">
         ${DIAMOND}
         <span class="name">Auto FDE</span>
-        <span class="ver" id="af-version" title="Extension version"></span>
         <span class="count" id="af-count" title="Prompts allowed">0</span>
         <span class="ctl">
           <button class="icon" id="af-toggle" type="button" data-state="active"
@@ -1162,15 +741,10 @@
             <span>Automatically resume after a network error</span>
           </label>
           <div class="hint">Tells the agent to carry on once the connection is back.</div>
-          <label class="row" style="margin-top:5px">
-            <input type="checkbox" id="af-bridge-toggle" checked>
-            <span>Accept messages from apps on this device</span>
-          </label>
-          <div class="hint">An app on your device can reply in this chat while you are away.</div>
         </div>
 
         <div class="sec">
-          <div class="cap">Recent activity</div>
+          <div class="cap">Recent clicks</div>
           <div class="log" id="af-log"></div>
         </div>
 
@@ -1181,12 +755,6 @@
   const header = shadow.querySelector('#af-header');
   const catsEl = shadow.querySelector('#af-cats');
   const countEl = shadow.querySelector('#af-count');
-  // manifest.json holds the only version number in the repo, and background.js
-  // passes it through. Run by hand there is none, so the slot comes out rather
-  // than sitting empty in the header.
-  const versionEl = shadow.querySelector('#af-version');
-  if (config.version) versionEl.textContent = 'v' + config.version;
-  else versionEl.remove();
   const logEl = shadow.querySelector('#af-log');
   const toggleBtn = shadow.querySelector('#af-toggle');
   const stopBtn = shadow.querySelector('#af-stop');
@@ -1238,15 +806,6 @@
   autoResumeEnabled = resumeBox.checked;
   if (autoResumeEnabled) reportResume('watching');
 
-  // Ticked by default: the point of it is unblocking a session while nobody is
-  // at the machine, and a default that had to be set again on every open would
-  // fail exactly then. Only code already running on this device can ask, and
-  // every message is in the log. Unticked, requests are refused rather than
-  // ignored, so whatever asked is told no instead of hanging.
-  const bridgeBox = shadow.querySelector('#af-bridge-toggle');
-  bridgeBox.onchange = e => { bridgeEnabled = e.target.checked; };
-  bridgeEnabled = bridgeBox.checked;
-
   // Neither answering a prompt with no button nor telling the page it is in front
   // is a preference. The first is the job; the second is how the page is kept
   // from deferring its own work. A setting only earns its place when the answer
@@ -1292,8 +851,6 @@
       const w = document.createElement('span');
       w.className = 'w';
       w.textContent = entry.what;
-      // The line ellipsises at the panel's width, and the reasons are sentences.
-      w.title = entry.what;
       row.append(t, w);
       return row;
     }));
@@ -1306,92 +863,16 @@
   }
   renderEmptyLog();
 
-  // ---------- Messages from apps on this device ----------
-  // Code outside the page cannot reach this chat: an isolated world shares the
-  // DOM but not the globals, its events arrive untrusted, and the page's CSP
-  // refuses an injected script that would escape it. This script already runs in
-  // the page's context, so an app asks it to do the send instead. The request
-  // arrives as a body attribute and the outcome goes back as one, attributes
-  // being the only thing both worlds can see.
-  //
-  // Writing the message to the session over Foundry's API would work from
-  // anywhere, but it moves the thread version, and the page then refuses its own
-  // next turn until it is reloaded, which takes this panel down with it.
-  const REQUEST_ATTR = 'data-auto-fde-request';
-  const RESULT_ATTR = 'data-auto-fde-result';
-  const handledRequests = new Set();
-
-  function answerRequest(id, ok, error) {
-    document.body.setAttribute(RESULT_ATTR, JSON.stringify(error ? { id, ok, error } : { id, ok }));
-  }
-
-  function handleRequest(raw) {
-    let request;
-    try { request = JSON.parse(raw); } catch { return; }
-    if (!request || typeof request.id !== 'string' || typeof request.text !== 'string') return;
-    // The attribute stays on the body after it is answered, so every mutation of
-    // any other attribute would otherwise resend the last message.
-    if (handledRequests.has(request.id)) return;
-    handledRequests.add(request.id);
-
-    const time = new Date().toLocaleTimeString();
-    if (!bridgeEnabled) {
-      appendLog(time, 'refused a message from this device');
-      answerRequest(request.id, false, 'the panel is not accepting messages from this device');
-      return;
-    }
-    if (!request.text.trim()) {
-      answerRequest(request.id, false, 'no text to send');
-      return;
-    }
-
-    // requireText, because the words are the whole request. Sending without them
-    // would press send on an empty composer, which the session answers by running
-    // its previous turn again: a reply that looks delivered and never was.
-    composeAndSend(request.text, { requireText: true }).then(result => {
-      // Stop can land inside the send. The panel is gone by then, so there is no
-      // log to write to, but whatever asked is still waiting on an answer.
-      if (!stopped) {
-        appendLog(new Date().toLocaleTimeString(), result.ok
-          ? 'sent a message from this device'
-          : 'could not send a message from this device');
-      }
-      answerRequest(request.id, result.ok, result.ok ? null : result.error);
-    });
-  }
-
-  // An observer rather than a timer: Chrome throttles timers in a tab nobody is
-  // looking at, and this has to answer while the tab is in the background.
-  const requestObserver = new MutationObserver(() => {
-    const raw = document.body.getAttribute(REQUEST_ATTR);
-    if (raw) handleRequest(raw);
-  });
-  requestObserver.observe(document.body, { attributes: true, attributeFilter: [REQUEST_ATTR] });
-  // A request written before the panel was opened is still worth answering: the
-  // caller is waiting on the result attribute either way.
-  const pendingAtStart = document.body.getAttribute(REQUEST_ATTR);
-  if (pendingAtStart) handleRequest(pendingAtStart);
-
-  teardown.push(() => {
-    requestObserver.disconnect();
-    document.body.removeAttribute(REQUEST_ATTR);
-    document.body.removeAttribute(RESULT_ATTR);
-  });
-
-
   function record(text, cat) {
     count++; countEl.textContent = count;
     const t = new Date().toLocaleTimeString();
     appendLog(t, `${text} · ${cat}`);
     console.log(`[Auto FDE] ${t} — [${cat}] clicked "${text}"`);
   }
-  // Says which of the two happened. An empty send still resumes the session, so
-  // a log claiming the text was sent when it was not would go unnoticed.
-  function recordResume(carriedText) {
+  function recordResume() {
     const t = new Date().toLocaleTimeString();
-    const what = carriedText ? 'sent the resume message' : 'resumed the session, without the text';
-    appendLog(t, what);
-    console.log(`[Auto FDE] ${t} — ${what}`);
+    appendLog(t, 'sent the resume message');
+    console.log(`[Auto FDE] ${t} — auto-sent resume message`);
   }
 
   // ---------- Reaching a prompt that is not on the page ----------
@@ -1479,19 +960,6 @@
       + ` allow=[${labels.join(' | ') || 'none'}] allowByText=${byText}`;
   }
 
-  // Buttons this script would press if it could read them, counted off
-  // textContent, which needs no rendering of any kind. One of these sitting
-  // unpressed is a row that is in the document and is not being matched, which is
-  // a bug in this file; none of them is the page not having rendered the row,
-  // which nothing here can fix. The two states read identically in the panel and
-  // need different reports, and the fact that separates them was only ever in the
-  // console.
-  function unmatchedAllows() {
-    return Array.from(document.querySelectorAll('button')).filter(btn =>
-      !clicked.has(btn) && !btn.disabled
-      && TARGET_LABELS.includes(collapse(btn.textContent).toLowerCase())).length;
-  }
-
   function reachPendingPrompt() {
     const now = Date.now();
 
@@ -1539,12 +1007,8 @@
     // it will not render.
     if (jumpAttempts >= MAX_JUMPS && !reportedStall) {
       reportedStall = true;
-      const unmatched = unmatchedAllows();
-      const what = unmatched
-        ? 'a prompt is on the page and was not matched'
-        : 'off-screen prompt still out of reach';
-      appendLog(new Date().toLocaleTimeString(), what);
-      console.warn(`[Auto FDE] ${what}; slowing down. ${stallReport()}`);
+      appendLog(new Date().toLocaleTimeString(), 'off-screen prompt still out of reach');
+      console.warn(`[Auto FDE] off-screen prompt still out of reach; slowing down. ${stallReport()}`);
     }
   }
 
@@ -1565,18 +1029,7 @@
         sawPrompt = true;
         if (clicked.has(btn) || btn.disabled) return;
         const context = promptContextFor(btn);
-        // Said out loud. The count simply stopping moving is what a refusal used
-        // to look like, which is indistinguishable from the script having died,
-        // and the no-row route has always named the prompts it held back.
-        const blocked = BLOCKED_CONTEXT.find(word => context.includes(word));
-        if (blocked) {
-          if (!refused.has(btn)) {
-            refused.add(btn);
-            appendLog(new Date().toLocaleTimeString(), `refused a prompt naming ${blocked}`);
-            console.warn(`[Auto FDE] a prompt naming "${blocked}" is on the block list`);
-          }
-          return;
-        }
+        if (BLOCKED_CONTEXT.some(word => context.includes(word))) return;
         const cat = categoryFor(context);
         if (!cat.enabled) return;
 
@@ -1642,7 +1095,7 @@
   stopBtn.onclick = () => {
     observer.disconnect();
     clearInterval(backstop);
-    stopped = true;
+    clearTimeout(resumeTimer);
     stopKeepAlive();
     // The page has to be handed the truth back, or it keeps reading its own
     // visibility off a panel that is no longer there.

@@ -1,15 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Auto FDE",
-  "version": "4.9.2",
-  "description": "Clicks Allow prompts in a Foundry AI FDE session, keeps the tab awake, resumes after network errors, and lets apps on your device reply in the chat.",
-  "permissions": [
-    "scripting",
-    "storage"
-  ],
-  "optional_host_permissions": [
-    "https://*/*"
-  ],
+  "version": "4.1.0",
+  "description": "Clicks Allow prompts in a Foundry AI FDE session, keeps the tab awake, and resumes after network errors.",
+  "permissions": ["scripting", "storage"],
+  "optional_host_permissions": ["https://*/*"],
   "background": {
     "service_worker": "background.js",
     "type": "module"
