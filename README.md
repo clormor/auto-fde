@@ -4,8 +4,43 @@ A Chrome extension that clicks the `Allow` prompts in a Palantir Foundry AI FDE
 session for you. One button, no DevTools, no pasting.
 
 It answers a class of consent prompts in advance, which is a choice rather than
-a convenience. Before leaving it running, read
-[what it does and does not decide for you](DEVELOPER.md#what-this-does-and-does-not-decide-for-you).
+a convenience, so the next section is what it does and does not decide for you.
+Read that before leaving it running.
+
+## What this does and does not decide for you
+
+Read this before handing it to a colleague.
+
+The extension changes how a console script is delivered. It does not change what
+the script does, and it does not review whether auto-clicking a consent prompt
+is appropriate for the work in front of you. The prompts exist so a person sees
+what the agent is about to do. Anyone running this is choosing to answer a class
+of those prompts in advance.
+
+The script clicks a button labelled exactly `Allow` or `Allow once`, so
+`Always allow`, `Allow all future` and `Deny` are never candidates. It then
+skips the prompt outright if the prompt's own text mentions `delete`, `force` or
+`production`, and the deploy/build category is off until you turn it on.
+Practical consequences worth stating out loud:
+
+- Categories are matched on the prompt's visible text with a handful of regexes,
+  riskiest category first. A prompt whose wording does not mention read, write,
+  edit, update, create, deploy, build, publish or run falls into `Unclassified`,
+  which is enabled. The default is to allow anything the script cannot classify.
+- The block list is three words in a substring match on the prompt, not a
+  reading of what the action does. A destructive action whose prompt does not
+  happen to use one of them gets clicked.
+- Auto-resume is on by default, and it writes into the chat on your behalf. It
+  is one fixed line telling the agent to carry on, sent once the connection has
+  answered two probes, and every send is in the panel's log. Untick it if
+  nothing should be said in your name.
+- Leave it running on a long unattended session and you will not know what was
+  approved beyond the last ten lines in the panel and whatever is in the
+  console.
+
+Reasonable use is a session you are supervising, on work you would have clicked
+through anyway. Unattended runs against anything touching production are a
+different proposition.
 
 ## Install
 

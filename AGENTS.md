@@ -12,7 +12,7 @@ Foundry origins it runs on are configured by the user at runtime.
 ## Verify before reporting done
 
 ```
-npm test      49 assertions, node only, no browser, no network
+npm test      node only, no browser, no network
 ./check.sh    required files, manifest parses, all JS parses, version
 ```
 
@@ -21,7 +21,7 @@ injection path, also run the browser suite:
 
 ```
 npm install && npx playwright install chromium   (once)
-npm run test:browser                             78 assertions
+npm run test:browser
 ```
 
 There is no linter and no build step. `check.sh` validates and writes nothing.
@@ -42,8 +42,7 @@ and no `dist/`.
   `host_permissions` or a `tabs` permission to make something easier is a
   regression, not a fix.
 - **`world: "MAIN"` on the injection is load-bearing.** Moving `auto-fde.js` to
-  an isolated world breaks React value setting and the double-press guard. See
-  DEVELOPER.md.
+  an isolated world breaks React value setting and the double-press guard.
 - **A MAIN-world script cannot see `chrome.*`.** Config reaches `auto-fde.js`
   through `window.__autoFdeConfig`, injected by `background.js` first.
 - **Never call `chrome.action.disable()`.** In Manifest V3 it does not grey the
@@ -141,8 +140,9 @@ and no `dist/`.
 - **Docs split:** README.md covers installing, adding a base URL, everyday use
   and first-line troubleshooting, in that order. Design rationale, tests and
   anything a user cannot act on go in DEVELOPER.md.
-- **Assertion counts are quoted in this file and DEVELOPER.md.** Change a suite
-  and update both.
+- **Do not quote counts in the docs.** An assertion total, a file count or a
+  line number goes stale on the next change and nobody updates it, so it ends
+  up lying. Name the suite and let it report its own total.
 
 ## Writing style
 
