@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const EXT = path.join(root, 'auto-fde');
 const SCRIPT = fs.readFileSync(path.join(EXT, 'auto-fde.js'), 'utf8');
+const MANIFEST = JSON.parse(fs.readFileSync(path.join(EXT, 'manifest.json'), 'utf8'));
 
 const ORIGIN = 'https://foundry.example.com';
 const SESSION_URL = `${ORIGIN}/workspace/ai-fde/session/69fa8c21-be1a-4210-bf71-a424d9b0e32d`;
@@ -250,7 +251,9 @@ const gone = page => page.evaluate(() => !document.getElementById('af-host'));
 // The script reads its configuration off the page because a MAIN-world script
 // cannot see chrome.storage. background.js writes it in before injecting; here
 // the test does the same thing by hand.
-async function mockPage(browser, url, config = { origins: [ORIGIN], pathMarker: '/ai-fde/' }, body = PAGE) {
+async function mockPage(browser, url,
+  config = { origins: [ORIGIN], pathMarker: '/ai-fde/', version: MANIFEST.version },
+  body = PAGE) {
   const page = await browser.newPage();
   await page.route('**/*', route =>
     route.fulfill({ status: 200, contentType: 'text/html', body }));
@@ -320,6 +323,17 @@ check('pause is an icon button in the header', await p1.evaluate(() => {
     && toggle.closest('#af-header') !== null;
 }));
 check('the active-state pill is gone', !(await has(p1, '#af-status')));
+
+// The version is the one thing that says which revision is running, and the
+// manifest is the only place it is written down.
+check('the header shows the version it was injected with',
+  (await text(p1, '#af-version')) === `v${MANIFEST.version}`,
+  await text(p1, '#af-version'));
+
+check('the version sits in the header', await p1.evaluate(() => {
+  const root = document.getElementById('af-host').shadowRoot;
+  return root.querySelector('#af-version').closest('#af-header') !== null;
+}));
 
 check('resuming after a network error is on by default',
   await p1.evaluate(() => document.getElementById('af-host').shadowRoot
@@ -625,6 +639,15 @@ const p4 = await mockPage(browser, SESSION_URL, null);
 await p4.evaluate(SCRIPT);
 await p4.waitForTimeout(300);
 check('refuses to run with no configuration on the page at all', await gone(p4));
+
+// Run by hand from the console there is no manifest to read, so the slot comes
+// out rather than sitting in the header as an empty gap.
+const p4a = await mockPage(browser, SESSION_URL,
+  { origins: [ORIGIN], pathMarker: '/ai-fde/' });
+await p4a.evaluate(SCRIPT);
+await p4a.waitForTimeout(300);
+check('the version slot is removed when none was injected',
+  (await has(p4a, '#af-panel')) && !(await has(p4a, '#af-version')));
 
 // A position saved on a wide screen puts the panel off the edge of a narrow one,
 // and a panel nobody can reach cannot be stopped.
