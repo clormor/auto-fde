@@ -109,8 +109,11 @@ and no `dist/`.
   meant to mark the tab audible and exempt it from Chrome's intensive throttling.
   Chrome will not start audio without a gesture on the page and a toolbar press is
   not one, so the box sat ticked while nothing played, and the throttling it was
-  supposed to prevent went on regardless. What actually answers a prompt in a
-  background tab is `answerWithoutARow()`, which needs no timer to be unthrottled.
+  supposed to prevent went on regardless. Note that removing it left the
+  background tab unsolved rather than solved: `answerWithoutARow()` needs no
+  timer to be unthrottled, but a hidden tab produces no mutation to call it
+  from, and prompts are in fact not answered until the tab is looked at.
+  Issue #20.
 - **Neither of those two is a setting.** Answering a prompt with no button is the
   job, and telling the page it is in front is not a preference. A checkbox earns
   its place only where the answer could reasonably be no, which is why

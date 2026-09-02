@@ -98,24 +98,23 @@ session you are looking at on the page.
 **Stop** shuts it down, and so does reloading the page. Press the toolbar button
 again to start it back up.
 
-## Working in another tab
+## Keep the tab on display
 
-It just works, and this is the part worth understanding.
+Leave the session tab open, active and in front. A prompt that arrives while you
+are looking at something else is not answered, and the session waits.
 
 Chrome stops drawing a tab you are not looking at, and Foundry will not add a row
 to a page it is not drawing, so a prompt that arrives while you are elsewhere has
-no button anywhere on the page. Nothing that clicks buttons can answer it.
+no button anywhere on the page. The panel does have a second route that does not
+need the button, writing the answer into the session's own state instead, and the
+log shows those with `no row` after the category. It is not enough to make a
+background tab work: [issue #20](https://github.com/clormor/auto-fde/issues/20)
+tracks why. Come back to the tab and whatever was waiting is picked up at once.
 
-So the panel does not click one. The pending approval is in the session's own
-state the whole time, and that is where the answer is written, exactly as pressing
-Allow writes it, followed by the same start of the agent loop the button triggers.
-That works in a background tab, behind another window, on another desktop. The log
-shows those with `no row` after the category.
-
-Two things still apply. The block list is checked against the tool's name, so
-anything mentioning deleting, forcing or production is refused and says so in the
-log. And an answer the session does not accept is reported rather than retried,
-because a half-answered prompt is worse than a waiting one.
+Two things apply wherever a prompt is answered. The block list is checked against
+the tool's name, so anything mentioning deleting, forcing or production is refused
+and says so in the log. And an answer the session does not accept is reported
+rather than retried, because a half-answered prompt is worse than a waiting one.
 
 ## If nothing happens
 
