@@ -1,0 +1,64 @@
+# Runs everything ./check.sh, the gate suite and the browser suite, on every pull
+# request into main and on main itself.
+#
+# The browser suite is the reason this is not a two-line workflow. It loads the
+# unpacked extension into a real Chromium, which the headless shell Playwright
+# downloads by default cannot do, so the full build is installed with its system
+# libraries. Nothing it does leaves the browser: the mock session page is served
+# by Playwright's request interception.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# A second push to the same branch makes the first run's answer worthless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Checks and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Cached on the lockfile, because the browser is pinned by the Playwright
+      # version in it. A cache hit still runs install-deps, which is apt work
+      # rather than a download and is not cached.
+      - name: Cache the browser
+        id: browser-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Chromium
+        if: steps.browser-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Install Chromium system dependencies
+        if: steps.browser-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+
+      - name: Validate the extension
+        run: npm run check
+
+      - name: Gate suite
+        run: npm test
+
+      - name: Browser suite
+        run: npm run test:browser
