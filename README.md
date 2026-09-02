@@ -48,12 +48,8 @@ collapsed state are remembered. Pause and stop are icons in the title bar, so
 they still work when the panel is collapsed down to a single bar with the
 chevron. Paused shows an amber play icon, running shows a green pause icon.
 
-Two settings sit below the categories:
+One setting sits below the categories:
 
-- **Keep the tab awake**, on by default. Inaudible audio marks the tab as
-  audible, which stops Chrome throttling its timers and stops a long session
-  being frozen or discarded. Chrome will not let a page start audio until
-  somebody touches it, so click anywhere in the tab once.
 - **Automatically resume after a network error**, on by default, since a dropped
   connection is what actually ends an unattended session. Once the connection has
   been back for a couple of seconds it types one line into the chat telling the
@@ -85,9 +81,6 @@ Two things still apply. The block list is checked against the tool's name, so
 anything mentioning deleting, forcing or production is refused and says so in the
 log. And an answer the session does not accept is reported rather than retried,
 because a half-answered prompt is worse than a waiting one.
-
-Clicking once in the tab after you open the panel is still worth doing, since
-that is what lets the keep-alive start. The log says so if it has not.
 
 ## If nothing happens
 

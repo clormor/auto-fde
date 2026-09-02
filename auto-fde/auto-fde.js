@@ -82,96 +82,6 @@
   const LOG_LIMIT = 10;
   const log = [];
 
-  // ---------- Keep-alive ----------
-  // On by default, because a tab left in the background is the whole point and
-  // Chrome's intensive throttling is what defeats it.
-  //
-  // The catch: an AudioContext created without a user gesture starts suspended,
-  // and this script is injected by a toolbar press, which does not give the page
-  // one. So the box starts ticked and the audio starts for real on the first
-  // click or keypress anywhere on the page. The panel says which of those two
-  // states it is in, because a ticked box that is quietly doing nothing is worse
-  // than an unticked one.
-  const GESTURE_EVENTS = ['pointerdown', 'keydown'];
-  let audioCtx = null, keepAliveOn = false, awaitingGesture = false;
-  let disarmGesture = () => {};
-
-  // Nothing is created until the page has been activated. An AudioContext built
-  // without a gesture cannot start, and Chrome writes its own warning into the
-  // page's console saying so, which is somebody else's console to be littering.
-  // userActivation.hasBeenActive says whether the page has already been used, so
-  // a panel opened on a session somebody has been working in starts the audio at
-  // once and everything else waits for the first click.
-  function startKeepAlive() {
-    if (keepAliveOn) return;
-    keepAliveOn = true;
-    if (navigator.userActivation && navigator.userActivation.hasBeenActive) {
-      openAudio();
-      return;
-    }
-    armGesture();
-  }
-
-  function openAudio() {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    gain.gain.value = 0.001;
-    osc.frequency.value = 20000;
-    osc.connect(gain).connect(audioCtx.destination);
-    osc.start();
-    audioCtx.__osc = osc;
-    settleKeepAlive();
-  }
-
-  function settleKeepAlive() {
-    if (!audioCtx) return;
-    audioCtx.resume()
-      .then(() => {
-        if (keepAliveOn && audioCtx && audioCtx.state === 'running') reportKeepAlive('On');
-        else armGesture();
-      })
-      .catch(armGesture);
-  }
-
-  function armGesture() {
-    if (!keepAliveOn) return;
-    reportKeepAlive('waiting for a click on the page');
-    if (awaitingGesture) return;
-    awaitingGesture = true;
-    // The one setting whose failure the user has to fix, and it looks identical
-    // to success in the panel: the box is ticked, the audio is suspended, and
-    // Chrome is throttling the tab anyway. So it goes in the log with the action
-    // that clears it, the same as a resume that could not be sent.
-    appendLog(new Date().toLocaleTimeString(), 'click the page once to keep the tab awake');
-    const onGesture = () => {
-      disarmGesture();
-      if (!keepAliveOn) return;
-      if (audioCtx) settleKeepAlive();
-      else openAudio();
-    };
-    GESTURE_EVENTS.forEach(e => window.addEventListener(e, onGesture, true));
-    disarmGesture = () => {
-      GESTURE_EVENTS.forEach(e => window.removeEventListener(e, onGesture, true));
-      awaitingGesture = false;
-      disarmGesture = () => {};
-    };
-  }
-
-  function stopKeepAlive() {
-    disarmGesture();
-    if (!keepAliveOn) return;
-    // There may be no context at all: the box can be ticked on a page nobody has
-    // touched yet, in which case this is still waiting for the first click.
-    if (audioCtx) {
-      audioCtx.__osc.stop();
-      audioCtx.close();
-      audioCtx = null;
-    }
-    keepAliveOn = false;
-    reportKeepAlive('Off');
-  }
-
   // ---------- Telling the page the tab is visible ----------
   // Chrome produces no frames for a hidden tab, and a callback that is delivered
   // with the frame, ResizeObserver and IntersectionObserver among them, is not
@@ -732,11 +642,6 @@
         <div class="sec">
           <div class="cap">Settings</div>
           <label class="row">
-            <input type="checkbox" id="af-keepalive" checked>
-            <span>Keep the tab awake</span>
-          </label>
-          <div class="hint">Inaudible audio stops Chrome throttling this tab.</div>
-          <label class="row" style="margin-top:5px">
             <input type="checkbox" id="af-resume-toggle" checked>
             <span>Automatically resume after a network error</span>
           </label>
@@ -774,17 +679,6 @@
     catsEl.appendChild(row);
   });
 
-  // Neither of the settings carries a status field any more: the panel assumes
-  // they work, which they do. The state still goes to the console, because
-  // "ticked but suspended" is a real thing to be able to check.
-  function reportKeepAlive(text) { console.log(`[Auto FDE] keep the tab awake: ${text}`); }
-
-  const keepAliveBox = shadow.querySelector('#af-keepalive');
-  keepAliveBox.onchange = e => {
-    e.target.checked ? startKeepAlive() : stopKeepAlive();
-  };
-  if (keepAliveBox.checked) startKeepAlive();
-
   // A failure is the one thing that cannot be assumed away, so it goes in the
   // activity log, where the user is already looking, rather than nowhere.
   function reportResume(text, failed = false) {
@@ -792,11 +686,11 @@
     if (failed) appendLog(new Date().toLocaleTimeString(), text);
   }
 
-  // Ticked by default, for the same reason the keep-alive is: the tab is in the
-  // background and nobody is watching it. A dropped connection is what actually
-  // ends a long session, and an agent sitting behind an error banner until
-  // somebody looks at the tab is the failure this is here to prevent. It writes
-  // one line into the chat to do it, which is why the log records every send.
+  // Ticked by default, because the tab is in the background and nobody is
+  // watching it. A dropped connection is what actually ends a long session, and
+  // an agent sitting behind an error banner until somebody looks at the tab is
+  // the failure this is here to prevent. It writes one line into the chat to do
+  // it, which is why the log records every send.
   const resumeBox = shadow.querySelector('#af-resume-toggle');
   resumeBox.onchange = e => {
     autoResumeEnabled = e.target.checked;
@@ -809,7 +703,7 @@
   // Neither answering a prompt with no button nor telling the page it is in front
   // is a preference. The first is the job; the second is how the page is kept
   // from deferring its own work. A setting only earns its place when the answer
-  // could reasonably be no, which is why the two above have one and these do not.
+  // could reasonably be no, which is why auto-resume has one and these do not.
   startVisibilitySpoof();
 
   // The panel remembers where it was put and whether it was collapsed. Both go
@@ -1096,7 +990,6 @@
     observer.disconnect();
     clearInterval(backstop);
     clearTimeout(resumeTimer);
-    stopKeepAlive();
     // The page has to be handed the truth back, or it keeps reading its own
     // visibility off a panel that is no longer there.
     stopVisibilitySpoof();
